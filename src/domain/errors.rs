@@ -14,6 +14,9 @@ pub enum DomainError {
     #[error("Database internal error: {0}")]
     DatabaseError(String),
 
+    #[error("Cache error: {0}")]
+    CacheError(String),
+
     #[error("Infrastructure error: {0}")]
     InfrastructureError(String),
 
