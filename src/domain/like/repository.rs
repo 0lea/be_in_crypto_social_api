@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 use crate::domain::errors::DomainError;
 use crate::domain::like::model::{ContentId, ContentType, Like};
 use crate::domain::user::model::UserId;
@@ -10,5 +12,11 @@ pub trait LikeRepository {
         content_type: &ContentType,
         content_id: &ContentId,
     ) -> Result<(), DomainError>;
-    async fn get_user_likes(&self, user_id: &UserId) -> Result<Vec<Like>, DomainError>;
+
+    async fn get_user_likes(
+        &self,
+        user_id: &UserId,
+        cursor: Option<DateTime<Utc>>,
+        limit: u64,
+    ) -> Result<Vec<Like>, DomainError>;
 }
