@@ -15,7 +15,7 @@ pub enum DomainError {
     DatabaseError(String),
 
     #[error("Infrastructure error: {0}")]
-    InfrastructureError(#[from] anyhow::Error),
+    InfrastructureError(String),
 
     #[error("Rate limit exceeded. Please retry after {retry_after} seconds")]
     RateLimitExceeded { retry_after: u64 },
