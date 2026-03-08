@@ -7,6 +7,10 @@ pub struct ApiError(pub DomainError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        tracing::error!(
+            error_type = ?self.0,
+            "Request failed"
+        );
         let (status, error_message) = match self.0 {
             // DomainError::NotFound => (StatusCode::NOT_FOUND, "Risorsa non trovata"),
             // DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "Non autorizzato"),

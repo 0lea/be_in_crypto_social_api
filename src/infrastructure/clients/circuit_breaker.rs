@@ -1,12 +1,22 @@
 use crate::domain::errors::DomainError;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::time::Duration;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum State {
     Closed,
     Open,
     HalfOpen,
+}
+
+impl From<u8> for State {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => State::Closed,
+            1 => State::Open,
+            _ => State::HalfOpen,
+        }
+    }
 }
 
 pub struct CircuitBreaker {
@@ -14,6 +24,7 @@ pub struct CircuitBreaker {
     timeout: i64,
     failures: AtomicU32,
     last_failure_time: AtomicI64,
+    state: AtomicU8,
 }
 
 impl CircuitBreaker {
@@ -32,24 +43,42 @@ impl CircuitBreaker {
             timeout,
             failures: AtomicU32::new(0),
             last_failure_time: AtomicI64::new(0),
+            state: AtomicU8::new(0),
         }
     }
 
     pub fn check_state(&self) -> State {
-        let fails = self.failures.load(Ordering::SeqCst);
-
-        if fails < self.threshold {
-            return State::Closed;
-        }
-
+        let old_state_raw = self.state.load(Ordering::SeqCst);
+        let old_state = State::from(old_state_raw); // Helper pe
         let last_error = self.last_failure_time.load(Ordering::SeqCst);
         let now = chrono::Utc::now().timestamp();
 
-        if now - last_error >= self.timeout {
-            State::HalfOpen
-        } else {
-            State::Open
+        let fails = self.failures.load(Ordering::SeqCst);
+
+        let final_state = match old_state {
+            _ if fails < self.threshold => State::Closed,
+
+            _ if now - last_error >= self.timeout => State::HalfOpen,
+
+            _ => State::Open,
+        };
+
+        if old_state != final_state {
+            tracing::warn!(
+                service = "external_api",
+                old_state = ?old_state,
+                new_state = ?final_state,
+                "Circuit breaker state transition"
+            );
+
+            self.state.store(final_state as u8, Ordering::SeqCst);
+
+            if final_state == State::Closed {
+                self.failures.store(0, Ordering::SeqCst);
+            }
         }
+
+        final_state
     }
 
     pub async fn call<F, T, E>(&self, f: F) -> Result<T, DomainError>

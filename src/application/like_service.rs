@@ -26,6 +26,10 @@ impl LikeService {
         }
     }
 
+    #[tracing::instrument(
+        skip(self, user_id), 
+        fields(content_type = %c_type, content_id = %c_id)
+    )]
     pub async fn add_like(
         &self,
         user_id: UserId,

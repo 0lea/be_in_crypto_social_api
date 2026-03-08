@@ -16,8 +16,9 @@ pub struct HttpExternalValidator {
 
 impl HttpExternalValidator {
     pub fn new() -> Self {
-        let profile_url = std::env::var("PROFILE_API_URL").expect("missing profile url env");
-        let content_url = std::env::var("CONTENT_API_POST_URL").expect("missing profile url env");
+        let profile_url = std::env::var("PROFILE_API_URL").expect("missing PROFILE_API_URL env");
+        let content_url =
+            std::env::var("CONTENT_API_POST_URL").expect("missing CONTENT_API_POST_URL env");
 
         Self {
             client: reqwest::Client::builder()
@@ -33,6 +34,7 @@ impl HttpExternalValidator {
 
 #[async_trait]
 impl ExternalValidator for HttpExternalValidator {
+    #[tracing::instrument(skip(self, token), fields(service = "profile_api", method = "GET"))]
     async fn validate_user(&self, token: &UserId) -> Result<(), DomainError> {
         let url = format!("{}/v1/auth/validate", self.profile_service_url);
 

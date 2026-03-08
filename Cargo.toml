@@ -7,7 +7,12 @@ edition = "2024"
 axum = "0.8"
 tokio = { version = "1.50", features = ["full"] }
 tower = { version = "0.5", features = ["util", "timeout"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "timeout"] }
+tower-http = { version = "0.6", features = [
+  "trace",
+  "cors",
+  "timeout",
+  "request-id",
+] }
 
 sqlx = { version = "0.8", features = [
   "runtime-tokio",
