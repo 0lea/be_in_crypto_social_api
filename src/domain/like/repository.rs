@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -7,6 +8,7 @@ use crate::domain::errors::DomainError;
 use crate::domain::like::{ContentId, ContentType, Like};
 use crate::domain::user::UserId;
 
+#[async_trait]
 pub trait LikeDbRepository: Send + Sync {
     async fn save(&self, like: &Like) -> Result<(), DomainError>;
     async fn remove(
@@ -23,7 +25,7 @@ pub trait LikeDbRepository: Send + Sync {
         limit: u64,
     ) -> Result<Vec<Like>, DomainError>;
 }
-
+#[async_trait]
 pub trait LikeCacheRepository: Send + Sync {
     async fn increment(
         &self,

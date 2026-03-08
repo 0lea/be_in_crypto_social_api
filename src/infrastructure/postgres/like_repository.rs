@@ -3,6 +3,7 @@ use crate::domain::{
     like::{ContentId, ContentType, Like, LikeDbRepository},
     user::UserId,
 };
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ impl PostgresLikeRepository {
     }
 }
 
+#[async_trait]
 impl LikeDbRepository for PostgresLikeRepository {
     async fn save(&self, like: &Like) -> Result<(), DomainError> {
         let content_id = like.content_id.0;

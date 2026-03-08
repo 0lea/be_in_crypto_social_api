@@ -3,6 +3,7 @@ use crate::domain::{
     like::{ContentId, ContentType, LikeCacheRepository},
 };
 
+use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
@@ -28,6 +29,7 @@ impl RedisLikeRepository {
     }
 }
 
+#[async_trait]
 impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
