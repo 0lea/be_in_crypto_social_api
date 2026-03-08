@@ -4,7 +4,7 @@ use crate::domain::errors::DomainError;
 use crate::domain::like::model::{ContentId, ContentType, Like};
 use crate::domain::user::model::UserId;
 
-pub trait LikeRepository {
+pub trait LikeDbRepository: Send + Sync {
     async fn save(&self, like: &Like) -> Result<(), DomainError>;
     async fn remove(
         &self,

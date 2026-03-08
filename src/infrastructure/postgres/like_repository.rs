@@ -1,6 +1,6 @@
 use crate::domain::{
     errors::DomainError,
-    like::{ContentId, ContentType, Like, LikeRepository},
+    like::{ContentId, ContentType, Like, LikeDbRepository},
     user::UserId,
 };
 use chrono::{DateTime, Utc};
@@ -8,7 +8,6 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 pub struct PostgresLikeRepository {
-    // Usiamo Arc per condividere il pool di connessioni
     pool: Arc<PgPool>,
 }
 
@@ -18,15 +17,12 @@ impl PostgresLikeRepository {
     }
 }
 
-// Usiamo il supporto nativo async di Rust 1.75+
-impl LikeRepository for PostgresLikeRepository {
+impl LikeDbRepository for PostgresLikeRepository {
     async fn save(&self, like: &Like) -> Result<(), DomainError> {
         let content_id = like.content_id.0;
         let user_id = like.user_id.0;
         let content_type = like.content_type.as_str();
 
-        // REQUISITO: Idempotenza tramite SQL
-        // Se esiste già, non fa nulla (ON CONFLICT DO NOTHING)
         sqlx::query!(
             r#"
             INSERT INTO likes (user_id, content_type, content_id, created_at)
