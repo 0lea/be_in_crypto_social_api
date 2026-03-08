@@ -58,22 +58,22 @@ impl CircuitBreaker {
     {
         match self.check_state() {
             State::Open => {
-                // L'interruttore è saltato. Non carichiamo il sistema.
-                return Err(DomainError::ExternalServiceUnavailable);
+                return Err(DomainError::ExternalServiceUnavailable {
+                    service: "todo".into(),
+                });
             }
-            State::Closed | State::HalfOpen => {
-                // In Closed passano tutte, in HalfOpen ne passa una di "test"
-                match f.await {
-                    Ok(data) => {
-                        self.reset();
-                        Ok(data)
-                    }
-                    Err(_) => {
-                        self.record_failure();
-                        Err(DomainError::ExternalServiceUnavailable)
-                    }
+            State::Closed | State::HalfOpen => match f.await {
+                Ok(data) => {
+                    self.reset();
+                    Ok(data)
                 }
-            }
+                Err(_) => {
+                    self.record_failure();
+                    Err(DomainError::ExternalServiceUnavailable {
+                        service: "todo".into(),
+                    })
+                }
+            },
         }
     }
 

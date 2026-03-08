@@ -1,8 +1,15 @@
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
+
+impl fmt::Display for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0) // Stampiamo solo l'UUID interno
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Like {

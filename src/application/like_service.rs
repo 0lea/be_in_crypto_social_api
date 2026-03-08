@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::{
     errors::DomainError,
+    external_validator::ExternalValidator,
     like::{ContentId, ContentType, Like, LikeCacheRepository, LikeDbRepository},
     user::UserId,
 };
@@ -9,16 +10,19 @@ use crate::domain::{
 pub struct LikeService {
     db_repo: Arc<dyn LikeDbRepository>,
     cache_repo: Arc<dyn LikeCacheRepository>,
+    extern_repo: Arc<dyn ExternalValidator>,
 }
 
 impl LikeService {
     pub fn new(
         db_repo: Arc<dyn LikeDbRepository>,
         cache_repo: Arc<dyn LikeCacheRepository>,
+        extern_repo: Arc<dyn ExternalValidator>,
     ) -> Self {
         Self {
             db_repo,
             cache_repo,
+            extern_repo,
         }
     }
 
@@ -28,6 +32,10 @@ impl LikeService {
         c_type: ContentType,
         c_id: ContentId,
     ) -> Result<(), DomainError> {
+        self.extern_repo.validate_user(&user_id).await?;
+        // TODO:
+        // self.validator.validate_content(&c_type, &c_id).await?;
+
         let like = Like {
             user_id,
             content_type: c_type.clone(),
