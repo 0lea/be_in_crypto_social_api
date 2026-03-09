@@ -34,10 +34,25 @@ impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let key = self.format_key(c_type, c_id);
+        let count_key = self.format_key(c_type, c_id);
+        let lb_key = format!("leaderboard:{}", c_type.as_str());
+        let score = chrono::Utc::now().timestamp();
+        let member = c_id.0.to_string();
 
-        let count: u64 = conn
-            .incr(key, 1)
+        let script = redis::Script::new(
+            r#"
+            local new_count = redis.call('INCR', KEYS[1])
+            redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
+            return new_count
+        "#,
+        );
+
+        let count: u64 = script
+            .key(count_key)
+            .key(lb_key)
+            .arg(score)
+            .arg(member)
+            .invoke_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
