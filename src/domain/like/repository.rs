@@ -31,7 +31,7 @@ pub trait LikeCacheRepository: Send + Sync {
         &self,
         content_type: &ContentType,
         content_id: &ContentId,
-    ) -> Result<(), DomainError>;
+    ) -> Result<u64, DomainError>;
 
     async fn decrement(
         &self,

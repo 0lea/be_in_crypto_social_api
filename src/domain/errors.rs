@@ -9,7 +9,13 @@ pub enum DomainError {
     NotFound { resource: String, id: String },
 
     #[error("External service unavailable: {service} (Circuit Breaker active)")]
-    ExternalServiceUnavailable { service: String },
+    DependencyUnavailable { service: String },
+
+    #[error("External service respond not found: {service} (Circuit Breaker close)")]
+    DependencyNotFound { service: String },
+
+    #[error("External service deserialize error: {service} (Circuit Breaker close)")]
+    DependencyDeserializeError { service: String },
 
     #[error("Database internal error: {0}")]
     DatabaseError(String),

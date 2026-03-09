@@ -31,16 +31,17 @@ impl RedisLikeRepository {
 
 #[async_trait]
 impl LikeCacheRepository for RedisLikeRepository {
-    async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<(), DomainError> {
+    async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
         let key = self.format_key(c_type, c_id);
 
-        conn.incr::<_, i64, ()>(key, 1)
+        let count: u64 = conn
+            .incr(key, 1)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        Ok(())
+        Ok(count)
     }
 
     async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<(), DomainError> {

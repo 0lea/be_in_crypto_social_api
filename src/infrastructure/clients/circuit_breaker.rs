@@ -81,27 +81,26 @@ impl CircuitBreaker {
         final_state
     }
 
-    pub async fn call<F, T, E>(&self, f: F) -> Result<T, DomainError>
+    pub async fn call<F, T>(&self, f: F) -> Result<T, DomainError>
     where
-        F: std::future::Future<Output = Result<T, E>>,
+        F: std::future::Future<Output = Result<T, DomainError>>,
     {
         match self.check_state() {
-            State::Open => {
-                return Err(DomainError::ExternalServiceUnavailable {
-                    service: "todo".into(),
-                });
-            }
+            State::Open => Err(DomainError::DependencyUnavailable {
+                service: "todo".into(),
+            }),
             State::Closed | State::HalfOpen => match f.await {
                 Ok(data) => {
                     self.reset();
                     Ok(data)
                 }
-                Err(_) => {
-                    self.record_failure();
-                    Err(DomainError::ExternalServiceUnavailable {
-                        service: "todo".into(),
-                    })
-                }
+                Err(err) => match err {
+                    DomainError::DependencyUnavailable { service: _ } => {
+                        self.record_failure();
+                        Err(err)
+                    }
+                    _ => Err(err),
+                },
             },
         }
     }

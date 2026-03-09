@@ -12,7 +12,7 @@ impl fmt::Display for UserId {
 }
 
 #[derive(Debug, Clone)]
-pub struct Like {
+pub struct User {
     pub user_id: UserId,
     pub display_name: String,
 }

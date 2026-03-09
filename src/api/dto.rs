@@ -1,9 +1,23 @@
-use serde::Deserialize;
-use uuid::Uuid;
+use crate::domain::like::{ContentId, ContentType};
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct LikeRequest {
-    pub user_id: Uuid,
-    pub content_type: String,
-    pub content_id: Uuid,
+    pub content_type: ContentType,
+    pub content_id: ContentId,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LikeResponse {
+    pub liked: bool,
+    pub count: u64,
+    pub liked_at: chrono::DateTime<chrono::Utc>,
+    pub request_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub message: String,
+    pub request_id: String,
 }

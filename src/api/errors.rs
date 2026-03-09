@@ -1,33 +1,31 @@
+use crate::api::dto::ErrorResponse;
 use crate::domain::errors::DomainError;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http::StatusCode};
-use serde_json::json;
 
 pub struct ApiError(pub DomainError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        tracing::error!(
-            error_type = ?self.0,
-            "Request failed"
-        );
-        let (status, error_message) = match self.0 {
-            // DomainError::NotFound => (StatusCode::NOT_FOUND, "Risorsa non trovata"),
-            // DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "Non autorizzato"),
-            // DomainError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "Troppe richieste"),
-            // DomainError::ExternalServiceUnavailable => {
-            //     (StatusCode::SERVICE_UNAVAILABLE, "Servizio esterno giù")
-            // }
+        let (status, message) = match self.0 {
+            DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "Invalid session token"),
+            DomainError::DependencyNotFound { service: _ } => {
+                (StatusCode::NOT_FOUND, "Content not found")
+            }
+            DomainError::DependencyUnavailable { service: _ } => {
+                (StatusCode::SERVICE_UNAVAILABLE, "Service unavaiable")
+            }
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Errore interno del server",
             ),
         };
 
-        let body = Json(json!({
-            "error": error_message,
-            "details": self.0.to_string()
-        }));
+        let body = Json(ErrorResponse {
+            error: status.canonical_reason().unwrap_or("Error").to_string(),
+            message: message.to_string(),
+            request_id: "context_id".into(),
+        });
 
         (status, body).into_response()
     }
