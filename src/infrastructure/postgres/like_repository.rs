@@ -63,7 +63,7 @@ impl LikeDbRepository for PostgresLikeRepository {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|e| DomainError::DatabaseError("dsd".to_owned()))?;
+        .map_err(|_e| DomainError::DatabaseError("dsd".to_owned()))?;
 
         Ok(())
     }

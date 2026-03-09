@@ -1,6 +1,5 @@
 use crate::{
     api::errors::ApiError,
-    application::like_service::LikeService,
     domain::{errors::DomainError, external_validator::ExternalValidator, user::UserId},
 };
 use axum::{

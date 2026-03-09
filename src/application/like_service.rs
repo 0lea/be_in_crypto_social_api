@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-    api::dto::{LikeRequest, LikeResponse},
     application::commands::{AddLikeCommand, AddLikeCommandResult},
     domain::{
         errors::DomainError,
         external_validator::ExternalValidator,
-        like::{ContentId, ContentType, Like, LikeCacheRepository, LikeDbRepository},
-        user::UserId,
+        like::{Like, LikeCacheRepository, LikeDbRepository},
     },
 };
 

@@ -1,6 +1,5 @@
 use crate::domain::errors::DomainError;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
-use std::time::Duration;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum State {
