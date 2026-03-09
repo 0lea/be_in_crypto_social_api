@@ -10,7 +10,7 @@ use axum::{
     response::Response,
 };
 use std::{sync::Arc, time::Instant};
-use tracing::{Instrument, info_span};
+use tracing::{Instrument, info, info_span};
 use uuid::Uuid;
 
 pub async fn auth_middleware(
@@ -31,11 +31,8 @@ pub async fn auth_middleware(
     let raw_token = &auth_header[7..];
     let token = Uuid::parse_str(raw_token).map_err(|_| DomainError::Unauthorized)?;
 
-    let user_id = UserId(token);
-    let user_id = validator
-        .validate_user(&user_id)
-        .await
-        .map_err(|_| DomainError::Unauthorized)?;
+    let mut user_id = UserId(token);
+    user_id.0 = validator.validate_user(&user_id).await?;
 
     req.extensions_mut().insert(user_id);
 

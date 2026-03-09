@@ -7,6 +7,8 @@ pub struct ApiError(pub DomainError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        tracing::error!(domain_error= %self.0,  "Mapping to ApiError");
+
         let (status, message) = match self.0 {
             DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "Invalid session token"),
             DomainError::DependencyNotFound { service: _ } => {

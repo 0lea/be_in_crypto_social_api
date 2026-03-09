@@ -10,6 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use reqwest::StatusCode;
+use tracing::info;
 use uuid::Uuid;
 
 const PROFILE_API: &str = "Profile API";
@@ -46,7 +47,6 @@ impl ExternalValidator for HttpExternalValidator {
 
     async fn validate_user(&self, token: &UserId) -> Result<Uuid, DomainError> {
         let url = format!("{}/v1/auth/validate", self.profile_service_url);
-
         let req_closure = async {
             let response = self
                 .client
@@ -57,8 +57,6 @@ impl ExternalValidator for HttpExternalValidator {
                 .map_err(|_| DomainError::DependencyUnavailable {
                     service: PROFILE_API.into(),
                 })?;
-
-            use reqwest::StatusCode;
 
             match response.status() {
                 s if s.is_success() => {

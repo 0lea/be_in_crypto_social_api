@@ -11,6 +11,5 @@ pub struct UserDto {
 #[derive(Debug, Deserialize)]
 pub struct ContentDto {
     pub id: Uuid,
-    pub title: String,
     pub content_type: String,
 }
