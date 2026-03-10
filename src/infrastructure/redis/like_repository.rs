@@ -59,13 +59,63 @@ impl LikeCacheRepository for RedisLikeRepository {
         Ok(count)
     }
 
-    async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<(), DomainError> {
+    async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let key = self.format_key(c_type, c_id);
+        let count_key = self.format_key(c_type, c_id);
+        let lb_key = format!("leaderboard:{}", c_type.as_str());
+        let score = chrono::Utc::now().timestamp();
+        let member = c_id.0.to_string();
 
-        //TODO: check logic: when 0 set to -1 ??
-        conn.decr::<_, i64, ()>(key, 1)
+        let script = redis::Script::new(
+            r#"
+            local new_count = redis.call('DECR', KEYS[1])
+            redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
+            return new_count
+            "#,
+        );
+
+        let count: i64 = script
+            .key(count_key)
+            .key(lb_key)
+            .arg(score)
+            .arg(member)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        Ok(count.max(0) as u64)
+    }
+
+    async fn set_value(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+        value: u64,
+    ) -> Result<(), DomainError> {
+        let mut conn = self.get_conn().await?;
+
+        let count_key = self.format_key(c_type, c_id);
+        let lb_key = format!("leaderboard:{}", c_type.as_str());
+        let score = chrono::Utc::now().timestamp();
+        let member = c_id.0.to_string();
+
+        // Usiamo SET per la chiave singola e ZADD per la leaderboard
+        let script = redis::Script::new(
+            r#"
+                redis.call('SET', KEYS[1], ARGV[1])
+                redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+                return redis.status_reply("OK")
+            "#,
+        );
+
+        let _: i64 = script
+            .key(count_key)
+            .key(lb_key)
+            .arg(value)
+            .arg(score)
+            .arg(member)
+            .invoke_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -75,12 +125,12 @@ impl LikeCacheRepository for RedisLikeRepository {
     async fn get_count(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let val: Option<u64> = conn
+        let res: Result<u64, DomainError> = conn
             .get(self.format_key(c_type, c_id))
             .await
-            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+            .map_err(|e| DomainError::CacheError(e.to_string()));
 
-        Ok(val.unwrap_or(0))
+        res
     }
 
     async fn get_counts_batch(
