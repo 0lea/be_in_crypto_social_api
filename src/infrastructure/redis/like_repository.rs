@@ -1,5 +1,5 @@
 use crate::{
-    api::dto::{BatchCountResponse, ContentCount, ContentItem},
+    api::dto::{BatchCountResponse, ContentCount, ContentItem, TopLikeItem},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, LikeCacheRepository},
@@ -11,6 +11,21 @@ use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
+enum LeadKeyType {
+    Data,
+    Canary,
+    Lock,
+}
+
+impl LeadKeyType {
+    fn as_str(&self) -> &str {
+        match self {
+            LeadKeyType::Data => "data",
+            LeadKeyType::Canary => "canary",
+            LeadKeyType::Lock => "lock",
+        }
+    }
+}
 pub struct RedisLikeRepository {
     client: Arc<Client>,
 }
@@ -20,8 +35,17 @@ impl RedisLikeRepository {
         Self { client }
     }
 
-    fn format_key(&self, c_type: &ContentType, c_id: &ContentId) -> String {
+    fn format_count_key(&self, c_type: &ContentType, c_id: &ContentId) -> String {
         format!("count:{}:{}", c_type.as_str(), c_id.0)
+    }
+
+    fn format_lead_key(&self, k_type: LeadKeyType, window: &str, c_type: &ContentType) -> String {
+        format!(
+            "leaderboard:{}:{}:{}",
+            k_type.as_str(),
+            window,
+            c_type.as_str()
+        )
     }
 
     async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
@@ -37,7 +61,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let count_key = self.format_key(c_type, c_id);
+        let count_key = self.format_count_key(c_type, c_id);
         let lb_key = format!("leaderboard:{}", c_type.as_str());
         let score = chrono::Utc::now().timestamp();
         let member = c_id.0.to_string();
@@ -65,7 +89,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let count_key = self.format_key(c_type, c_id);
+        let count_key = self.format_count_key(c_type, c_id);
         let lb_key = format!("leaderboard:{}", c_type.as_str());
         let score = chrono::Utc::now().timestamp();
         let member = c_id.0.to_string();
@@ -98,7 +122,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let count_key = self.format_key(c_type, c_id);
+        let count_key = self.format_count_key(c_type, c_id);
         let lb_key = format!("leaderboard:{}", c_type.as_str());
         let score = chrono::Utc::now().timestamp();
         let member = c_id.0.to_string();
@@ -129,7 +153,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut conn = self.get_conn().await?;
 
         let res: Result<u64, DomainError> = conn
-            .get(self.format_key(c_type, c_id))
+            .get(self.format_count_key(c_type, c_id))
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()));
 
@@ -147,7 +171,7 @@ impl LikeCacheRepository for RedisLikeRepository {
 
         let keys: Vec<String> = items
             .iter()
-            .map(|i| self.format_key(&i.content_type, &i.content_id))
+            .map(|i| self.format_count_key(&i.content_type, &i.content_id))
             .collect();
 
         let values: Vec<Option<u64>> = conn
@@ -177,7 +201,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut pipe = redis::pipe();
 
         for i in counts {
-            let key = self.format_key(&i.content_type, &i.content_id);
+            let key = self.format_count_key(&i.content_type, &i.content_id);
             pipe.set_ex(key, i.count, 3600);
         }
 
@@ -189,41 +213,79 @@ impl LikeCacheRepository for RedisLikeRepository {
         Ok(())
     }
 
-    async fn update_leaderboard(
+    async fn get_leaderboard_with_canary(
         &self,
+        window: &str,
         c_type: &ContentType,
-        c_id: &ContentId,
+    ) -> Result<(Option<Vec<TopLikeItem>>, bool), DomainError> {
+        let mut conn = self.get_conn().await?;
+
+        let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
+        let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
+
+        let result: (Option<String>, Option<String>) = redis::cmd("MGET")
+            .arg(&data_key)
+            .arg(&canary_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        let (data_json, canary_exists) = result;
+
+        let items = data_json.and_then(|j| serde_json::from_str(&j).ok());
+        let is_fresh = canary_exists.is_some();
+
+        Ok((items, is_fresh))
+    }
+
+    async fn set_leaderboard_with_canary(
+        &self,
+        window: &str,
+        c_type: &ContentType,
+        items: &[TopLikeItem],
+        canary_ttl: u64,
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let key = format!("leaderboard:{}", c_type.as_str());
-        let score = chrono::Utc::now().timestamp();
-        let member = c_id.0.to_string();
+        let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
+        let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
 
-        let _: i64 = conn
-            .zadd(key, member, score)
+        let json_str = serde_json::to_string(items).unwrap_or_default();
+
+        // Aggiorniamo i dati (senza TTL o TTL lungo) e resettiamo il canary
+        let mut pipe = redis::pipe();
+        pipe.set(&data_key, json_str)
+            .set_ex(&canary_key, "alive", canary_ttl);
+
+        pipe.query_async::<()>(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
         Ok(())
     }
 
-    async fn get_leaderboard_window(
+    async fn acquire_refresh_lock(
         &self,
+        window: &str,
         c_type: &ContentType,
-        seconds: i64,
-    ) -> Result<Vec<String>, DomainError> {
+    ) -> Result<bool, DomainError> {
         let mut conn = self.get_conn().await?;
+        let lock_key = self.format_lead_key(LeadKeyType::Lock, window, c_type);
 
-        let now = chrono::Utc::now().timestamp();
-        let start = now - seconds;
-
-        let ids: Vec<String> = conn
-            .zrevrangebyscore(format!("leaderboard:{}", c_type.as_str()), now, start)
+        // Tentiamo di impostare una chiave "lock" che scade dopo 10 secondi.
+        // NX: Solo se non esiste.
+        // EX 10: Se il task crasha, il lock si libera da solo dopo 10s.
+        let acquired: Option<String> = redis::cmd("SET")
+            .arg(&lock_key)
+            .arg("locked")
+            .arg("NX")
+            .arg("EX")
+            .arg(10)
+            .query_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        Ok(ids)
+        Ok(acquired.is_some()) // Ritorna true se abbiamo preso il lock
     }
 
     async fn health_check(&self) -> Result<(), DomainError> {

@@ -5,7 +5,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     api::dto::{
         BatchRequest, BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
-        PaginationCursor, StatusResponse, UnlikeResponse, UserLikesResponse,
+        PaginationCursor, StatusResponse, TopLikesResponse, UnlikeResponse, UserLikesResponse,
     },
     application::commands::{AddLikeCommand, AddLikeCommandResult},
     domain::{
@@ -370,11 +370,102 @@ impl LikeService {
         })
     }
 
+    pub async fn get_top_likes(
+        &self,
+        content_type: ContentType,
+        window_str: String,
+        limit: i64,
+    ) -> Result<TopLikesResponse, DomainError> {
+        let limit = limit.min(50);
+
+        let since = match window_str.as_str() {
+            "24h" => Some(chrono::Utc::now() - chrono::Duration::hours(24)),
+            "7d" => Some(chrono::Utc::now() - chrono::Duration::days(7)),
+            "30d" => Some(chrono::Utc::now() - chrono::Duration::days(30)),
+            "all" => None,
+            _ => return Err(DomainError::ValidationError("Invalid window".into())),
+        };
+
+        let (cached_data, is_fresh) = self
+            .cache_repo
+            .get_leaderboard_with_canary(&window_str, &content_type)
+            .await
+            .unwrap_or((None, false));
+
+        if let Some(items) = cached_data {
+            // 2. Se i dati sono vecchi (Canary morto)
+            if !is_fresh {
+                // PROVIAMO A PRENDERE IL LOCK
+                if self
+                    .cache_repo
+                    .acquire_refresh_lock(&window_str, &content_type)
+                    .await
+                    .unwrap_or(false)
+                {
+                    tracing::info!(
+                        "Lock acquired for {}. Refreshing in background.",
+                        window_str
+                    );
+
+                    let db_repo = self.db_repo.clone();
+                    let cache_repo = self.cache_repo.clone();
+                    let w_str = window_str.clone();
+                    let since_val = since;
+                    let c_type = content_type.clone();
+
+                    tokio::spawn(async move {
+                        match db_repo
+                            .get_top_likes(c_type.as_opt(), since_val, limit)
+                            .await
+                        {
+                            Ok(new_items) => {
+                                let canary_ttl = if w_str == "24h" { 30 } else { 300 };
+                                let _ = cache_repo
+                                    .set_leaderboard_with_canary(
+                                        &w_str, &c_type, &new_items, canary_ttl,
+                                    )
+                                    .await;
+                                tracing::info!("Background refresh completed for {}.", w_str);
+                            }
+                            Err(e) => tracing::error!("Background refresh failed: {}", e),
+                        }
+                    });
+                } else {
+                    tracing::debug!(
+                        "Refresh already in progress for {}. Serving stale data.",
+                        window_str
+                    );
+                }
+            }
+
+            return Ok(TopLikesResponse {
+                window: window_str,
+                content_type,
+                items,
+            });
+        }
+
+        let items = self
+            .db_repo
+            .get_top_likes(content_type.as_opt(), since, limit)
+            .await?;
+
+        let _ = self
+            .cache_repo
+            .set_leaderboard_with_canary(&window_str, &content_type, &items, 30)
+            .await;
+
+        Ok(TopLikesResponse {
+            window: window_str,
+            content_type,
+            items,
+        })
+    }
+
     pub async fn full_health_check(&self) -> Result<(), DomainError> {
         self.db_repo.health_check().await?;
         self.cache_repo.health_check().await?;
         self.extern_repo.health_check().await?;
-
         Ok(())
     }
 }

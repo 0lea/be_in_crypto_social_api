@@ -6,7 +6,7 @@ pub mod infrastructure;
 use crate::{
     api::{
         handlers::{
-            delete_unlike, get_count, get_count_batch, get_status, get_status_batch,
+            delete_unlike, get_count, get_count_batch, get_status, get_status_batch, get_top_likes,
             get_user_likes, post_like,
         },
         health,
@@ -29,7 +29,8 @@ pub fn create_app(
 ) -> axum::Router {
     let public_routes = Router::new()
         .route("/likes/batch/counts", post(get_count_batch))
-        .route("/likes/{content_type}/{content_id}/count", get(get_count));
+        .route("/likes/{content_type}/{content_id}/count", get(get_count))
+        .route("/likes/top", get(get_top_likes));
 
     let protected_routes = Router::new()
         .route("/likes", post(post_like))

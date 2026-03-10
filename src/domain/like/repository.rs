@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor};
+use crate::api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor, TopLikeItem};
 use crate::domain::errors::DomainError;
 use crate::domain::like::{ContentId, ContentType, Like};
 use crate::domain::user::UserId;
@@ -51,6 +51,13 @@ pub trait LikeDbRepository: Send + Sync {
         items: &[ContentItem],
     ) -> Result<Vec<ContentCount>, DomainError>;
 
+    async fn get_top_likes(
+        &self,
+        content_type: Option<&str>,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<TopLikeItem>, DomainError>;
+
     async fn health_check(&self) -> Result<(), DomainError>;
 }
 #[async_trait]
@@ -87,17 +94,25 @@ pub trait LikeCacheRepository: Send + Sync {
 
     async fn set_counts_batch(&self, counts: Vec<ContentCount>) -> Result<(), DomainError>;
 
-    async fn update_leaderboard(
+    async fn get_leaderboard_with_canary(
         &self,
-        content_type: &ContentType,
-        content_id: &ContentId,
+        window: &str,
+        c_type: &ContentType,
+    ) -> Result<(Option<Vec<TopLikeItem>>, bool), DomainError>;
+
+    async fn set_leaderboard_with_canary(
+        &self,
+        window: &str,
+        c_type: &ContentType,
+        items: &[TopLikeItem],
+        canary_ttl: u64,
     ) -> Result<(), DomainError>;
 
-    async fn get_leaderboard_window(
+    async fn acquire_refresh_lock(
         &self,
+        window: &str,
         c_type: &ContentType,
-        seconds: i64,
-    ) -> Result<Vec<String>, DomainError>;
+    ) -> Result<bool, DomainError>;
 
     async fn health_check(&self) -> Result<(), DomainError>;
 }

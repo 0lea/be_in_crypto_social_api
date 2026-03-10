@@ -1,5 +1,5 @@
 use crate::{
-    api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor},
+    api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor, TopLikeItem},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, Like, LikeDbRepository},
@@ -229,6 +229,39 @@ impl LikeDbRepository for PostgresLikeRepository {
         .fetch_all(&*self.pool)
         .await
         .map_err(|e| DomainError::DatabaseError(e.to_string()))
+    }
+
+    async fn get_top_likes(
+        &self,
+        content_type: Option<&str>,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<TopLikeItem>, DomainError> {
+        // Usiamo una query che sfrutta l'indice temporale
+        let items = sqlx::query_as!(
+            TopLikeItem,
+            r#"
+            SELECT 
+                content_type, 
+                content_id, 
+                COUNT(*) as "count!"
+            FROM likes
+            WHERE 
+                ($1::text IS NULL OR content_type = $1) AND
+                ($2::timestamptz IS NULL OR created_at >= $2)
+            GROUP BY content_type, content_id
+            ORDER BY "count!" DESC
+            LIMIT $3
+            "#,
+            content_type,
+            since,
+            limit
+        )
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
+
+        Ok(items)
     }
 
     async fn health_check(&self) -> Result<(), DomainError> {

@@ -1,8 +1,11 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use redis::Commands;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::{collections::HashMap, ops::Add, sync::Arc};
+use std::{collections::HashMap, ops::Add, sync::Arc, time::Duration};
+use tokio::task::JoinSet;
+use uuid::Uuid;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{header, method, path},
@@ -11,6 +14,10 @@ use wiremock::{
 use social_api::{
     application::like_service::LikeService,
     create_app,
+    domain::{
+        like::{ContentId, ContentType},
+        user::UserId,
+    },
     infrastructure::{
         clients::http_external_validator::HttpExternalValidator,
         postgres::like_repository::PostgresLikeRepository,
@@ -574,4 +581,177 @@ async fn test_user_likes_pagination_and_filtering(pool: PgPool) {
         res_empty.json::<Value>()["items"].as_array().unwrap().len(),
         0
     );
+}
+
+async fn insert_old_like(
+    pool: &PgPool,
+    user_id: UserId,
+    content_id: ContentId,
+    c_type: ContentType,
+    hours_ago: i32,
+) {
+    sqlx::query!(
+        "INSERT INTO likes (user_id, content_id, content_type, created_at) 
+         VALUES ($1, $2, $3, NOW() - make_interval(hours => $4))",
+        user_id.0,
+        content_id.0,
+        c_type.as_str(),
+        hours_ago
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_leaderboard_full_lifecycle(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool.clone(), mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    let redis_url = std::env::var("REDIS_TEST_URL").unwrap_or("redis://127.0.0.1:6379/2".into());
+    let redis_client = redis::Client::open(redis_url).unwrap();
+    let mut conn = redis_client
+        .get_connection()
+        .expect("Failed to connect to Redis");
+
+    let post_recent_id = Uuid::new_v4();
+    let post_old_id = Uuid::new_v4();
+    let new_user_id = || -> UserId { Uuid::new_v4().into() };
+
+    // 1. SETUP DATI
+    for _ in 0..10 {
+        insert_old_like(
+            &pool,
+            new_user_id(),
+            post_recent_id.into(),
+            "post".to_string().into(),
+            1,
+        )
+        .await;
+    }
+    for _ in 0..15 {
+        insert_old_like(
+            &pool,
+            new_user_id(),
+            post_old_id.into(),
+            "post".to_string().into(),
+            48,
+        )
+        .await;
+    }
+
+    // --- CASE 1: Cold Start (Redis Vuoto) ---
+    let _: () = redis::cmd("FLUSHDB").query(&mut conn).unwrap();
+
+    let res = server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "content_type": "post", "window": "24h", "limit": 10 }))
+        .await;
+
+    res.assert_status(StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["items"][0]["content_id"], post_recent_id.to_string());
+    assert_eq!(body["items"][0]["count"], 10);
+
+    // --- CASE 2: Cache Hit ---
+    // Aggiungiamo un like (totale 11), ma la cache deve restituire ancora 10
+    insert_old_like(
+        &pool,
+        new_user_id(),
+        post_recent_id.into(),
+        "post".to_string().into(),
+        0,
+    )
+    .await;
+
+    let res_cached = server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "content_type": "post", "window": "24h" }))
+        .await;
+    assert_eq!(res_cached.json::<Value>()["items"][0]["count"], 10);
+
+    // --- CASE 3: Canary Expired & Background Refresh ---
+    // Il refresh avviene se il canary non c'è. La chiave dipende dalla tua implementazione del repo.
+    let _: () = conn.del("leaderboard:canary:24h:post").unwrap();
+
+    // Serve ancora dati vecchi (10)
+    let res_stale = server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "content_type": "post", "window": "24h" }))
+        .await;
+    assert_eq!(res_stale.json::<Value>()["items"][0]["count"], 10);
+
+    // Aspettiamo il task background
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Ora deve essere aggiornato a 11
+    let res_fresh = server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "content_type": "post", "window": "24h" }))
+        .await;
+    assert_eq!(res_fresh.json::<Value>()["items"][0]["count"], 11);
+
+    // --- CASE 4: Thundering Herd & Lock ---
+    let _: () = conn.del("leaderboard:canary:24h:post").unwrap();
+
+    let mut set = JoinSet::new();
+    let srv_arc = Arc::new(server);
+    for _ in 0..10 {
+        let s = srv_arc.clone();
+        set.spawn(async move {
+            s.get("/v1/likes/top")
+                .add_query_params(json!({ "content_type": "post", "window": "24h" }))
+                .await
+        });
+    }
+
+    while let Some(res) = set.join_next().await {
+        res.unwrap().assert_status(StatusCode::OK);
+    }
+
+    // --- CASE 5: Finestre temporali diverse (7d) ---
+    let res_7d = srv_arc
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "content_type": "post", "window": "7d" }))
+        .await;
+    let body_7d: Value = res_7d.json();
+    // In 7 giorni vince il post vecchio con 15 like
+    assert_eq!(body_7d["items"][0]["content_id"], post_old_id.to_string());
+    assert_eq!(body_7d["items"][0]["count"], 15);
+}
+
+#[sqlx::test]
+async fn test_leaderboard_validation(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool, mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    // Window invalida tramite query param
+    server
+        .get("/v1/likes/top")
+        .add_query_param("window", "invalid_window")
+        .await
+        .assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Limit enorme: il service lo cappa a 50, deve rispondere 200 OK
+    server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "window": "24h", "limit": 9999 }))
+        .await
+        .assert_status(StatusCode::OK);
+}
+#[sqlx::test]
+async fn test_leaderboard_empty_states(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool, mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    let res = server
+        .get("/v1/likes/top")
+        .add_query_params(json!({ "window": "24h", "limit": 9999 }))
+        .await;
+    res.assert_status(StatusCode::OK);
+    assert_eq!(res.json::<Value>()["items"].as_array().unwrap().len(), 0);
 }

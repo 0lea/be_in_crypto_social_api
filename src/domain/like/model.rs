@@ -43,6 +43,13 @@ impl ContentType {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    pub fn as_opt(&self) -> Option<&str> {
+        if self.as_str() == "all" {
+            None
+        } else {
+            Some(self.as_str())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

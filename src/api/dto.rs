@@ -148,3 +148,25 @@ impl PaginationCursor {
             .transpose()
     }
 }
+
+// Leaderboard
+#[derive(Debug, Deserialize)]
+pub struct TopLikesQuery {
+    pub content_type: Option<String>,
+    pub window: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct TopLikesResponse {
+    pub window: String,
+    pub content_type: ContentType,
+    pub items: Vec<TopLikeItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopLikeItem {
+    pub content_type: String,
+    pub content_id: String,
+    pub count: i64,
+}

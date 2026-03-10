@@ -1,18 +1,20 @@
 use crate::{
     api::{
-        dto::{BatchRequest, LikeRequest, LikeResponse, UserLikesQuery, UserLikesResponse},
+        dto::{
+            BatchRequest, LikeRequest, LikeResponse, TopLikesQuery, TopLikesResponse,
+            UserLikesQuery, UserLikesResponse,
+        },
         errors::ApiError,
     },
     application::{commands::AddLikeCommand, like_service::LikeService},
     domain::{
-        errors::DomainError,
         like::{ContentId, ContentType},
         user::UserId,
     },
 };
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State, rejection::JsonRejection},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -101,5 +103,16 @@ pub async fn get_user_likes(
         .get_user_liked_items(user_id, query.content_type, query.cursor, limit)
         .await?;
 
+    Ok(Json(response))
+}
+
+#[tracing::instrument(skip(service))]
+pub async fn get_top_likes(
+    State(service): State<Arc<LikeService>>,
+    Query(query): Query<TopLikesQuery>,
+) -> Result<Json<TopLikesResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(10);
+    let c_type: ContentType = query.content_type.unwrap_or("all".into()).into();
+    let response = service.get_top_likes(c_type, query.window, limit).await?;
     Ok(Json(response))
 }
