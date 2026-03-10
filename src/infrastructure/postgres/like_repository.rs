@@ -20,12 +20,12 @@ impl PostgresLikeRepository {
 
 #[async_trait]
 impl LikeDbRepository for PostgresLikeRepository {
-    async fn save(&self, like: &Like) -> Result<(), DomainError> {
+    async fn save(&self, like: &Like) -> Result<bool, DomainError> {
         let content_id = like.content_id.0;
         let user_id = like.user_id.0;
         let content_type = like.content_type.as_str();
 
-        sqlx::query!(
+        let res = sqlx::query!(
             r#"
             INSERT INTO likes (user_id, content_type, content_id, created_at)
             VALUES ($1, $2, $3, $4)
@@ -38,21 +38,38 @@ impl LikeDbRepository for PostgresLikeRepository {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|e| {
-            tracing::error!("Errore DB durante il salvataggio like: {:?}", e);
-            DomainError::DatabaseError(format!("Error during like {:?}", e))
-        })?;
+        .map_err(|e| DomainError::DatabaseError(format!("Error on like query {:?}", e)))?;
 
-        Ok(())
+        Ok(res.rows_affected() == 0)
     }
 
+    async fn get_like(
+        &self,
+        user_id: &UserId,
+        content_type: &ContentType,
+        content_id: &ContentId,
+    ) -> Result<Like, DomainError> {
+        sqlx::query_as!(
+            Like,
+            r#"
+            SELECT user_id, content_type, content_id, created_at FROM likes 
+            WHERE user_id = $1 AND content_type = $2 AND content_id = $3
+            "#,
+            user_id.0,
+            content_type.as_str(),
+            content_id.0
+        )
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))
+    }
     async fn remove(
         &self,
         user_id: &UserId,
         content_type: &ContentType,
         content_id: &ContentId,
-    ) -> Result<(), DomainError> {
-        sqlx::query!(
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query!(
             r#"
             DELETE FROM likes 
             WHERE user_id = $1 AND content_type = $2 AND content_id = $3
@@ -63,11 +80,52 @@ impl LikeDbRepository for PostgresLikeRepository {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|_e| DomainError::DatabaseError("dsd".to_owned()))?;
+        .map_err(|e| DomainError::DatabaseError(format!("Error on unlike query {:?}", e)))?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
+    async fn get_likes_count(
+        &self,
+        content_type: &ContentType,
+        content_id: &ContentId,
+    ) -> Result<u64, DomainError> {
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) 
+            FROM likes 
+            WHERE content_type = $1 AND content_id = $2
+            "#,
+            content_type.as_str(),
+            content_id.0
+        )
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| {
+            DomainError::DatabaseError(format!("Error on get like count query {:?}", e))
+        })?;
+
+        // if count.unwrap_or_default() == 0 {
+        //     return Err(DomainError::DatabaseNotFound(
+        //         "Error on get like count query, like not fond".to_string(),
+        //     ));
+        // }
+
+        Ok(count.unwrap_or_default() as u64)
+    }
+    //TODO: use materialized table
+    // async fn get_likes_count(&self, content_id: &ContentId) -> Result<u64, DomainError> {
+    //     let count: i64 = sqlx::query_scalar!(
+    //         "SELECT likes_count FROM content_stats WHERE content_id = $1",
+    //         content_id.0
+    //     )
+    //     .fetch_one(&*self.pool)
+    //     .await
+    //     .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
+    //     Ok(count as u64)
+    // }
+    //
+    //
     async fn get_user_likes(
         &self,
         user_id: &UserId,
