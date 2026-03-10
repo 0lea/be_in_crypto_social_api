@@ -91,7 +91,10 @@ async fn setup_test_app(pool: PgPool, mock_url: String) -> axum::Router {
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
     let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
-    let validator = Arc::new(HttpExternalValidator::new(mock_url.clone(), mock_url));
+    let mut content_apis = HashMap::new();
+    content_apis.insert("post".to_string(), mock_url.clone());
+    content_apis.insert("bonus_hunter".to_string(), mock_url.clone());
+    let validator = Arc::new(HttpExternalValidator::new(mock_url.clone(), content_apis));
     let like_service = Arc::new(LikeService::new(db_repo, cache_repo, validator.clone()));
     create_app(like_service, validator)
 }
@@ -620,7 +623,6 @@ async fn test_leaderboard_full_lifecycle(pool: PgPool) {
     let post_old_id = Uuid::new_v4();
     let new_user_id = || -> UserId { Uuid::new_v4().into() };
 
-    // 1. SETUP DATI
     for _ in 0..10 {
         insert_old_like(
             &pool,
