@@ -26,7 +26,7 @@ async fn main() {
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
     let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
 
-    let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new());
+    let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::from_env());
     let like_service = Arc::new(LikeService::new(
         db_repo,
         cache_repo,
