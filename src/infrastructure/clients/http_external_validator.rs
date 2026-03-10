@@ -130,4 +130,18 @@ impl ExternalValidator for HttpExternalValidator {
 
         self.breaker.call(req_closure).await
     }
+
+    async fn health_check(&self) -> Result<(), DomainError> {
+        let url = format!("{}/v1/auth/validate", self.profile_service_url);
+
+        let _ = self
+            .client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(1))
+            .send()
+            .await
+            .map_err(|e| DomainError::DependencyHealtError(e.to_string()))?;
+
+        Ok(())
+    }
 }

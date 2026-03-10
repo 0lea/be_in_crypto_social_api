@@ -15,4 +15,6 @@ pub trait ExternalValidator: Send + Sync {
         content_type: &ContentType,
         content_id: &ContentId,
     ) -> Result<Uuid, DomainError>;
+
+    async fn health_check(&self) -> Result<(), DomainError>;
 }

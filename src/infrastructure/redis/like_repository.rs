@@ -225,4 +225,14 @@ impl LikeCacheRepository for RedisLikeRepository {
 
         Ok(ids)
     }
+
+    async fn health_check(&self) -> Result<(), DomainError> {
+        let mut conn = self.get_conn().await?;
+
+        conn.ping::<()>()
+            .await
+            .map_err(|e| DomainError::CacheHealthError(e.to_string()))?;
+
+        Ok(())
+    }
 }

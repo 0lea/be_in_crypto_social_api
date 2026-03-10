@@ -12,7 +12,6 @@ mod tests {
         },
     };
     use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
     use mockall::{mock, predicate::*};
     use uuid::Uuid;
 
@@ -65,7 +64,9 @@ mod tests {
         items: &[ContentItem],
     ) -> Result<Vec<Like>, DomainError> ;
 
+    async fn health_check(&self) -> Result<(), DomainError>;
         }
+
     }
 
     pub struct FakeCacheRepo {
@@ -157,7 +158,12 @@ mod tests {
             }
             Ok(())
         }
+
+        async fn health_check(&self) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
+
     mock! {
         pub Validator {}
         #[async_trait]
@@ -168,6 +174,8 @@ mod tests {
                 content_type: &ContentType,
                 content_id: &ContentId,
             ) -> Result<Uuid, DomainError>;
+
+        async fn health_check(&self) -> Result<(), DomainError> ;
         }
     }
     #[tokio::test]

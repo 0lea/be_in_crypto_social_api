@@ -19,6 +19,7 @@ impl IntoResponse for ApiError {
             }
             DomainError::InvalidCursor(_) => (StatusCode::BAD_REQUEST, "BAD_CURSOR"),
 
+            // TODO: to handle health error
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Errore interno del server",

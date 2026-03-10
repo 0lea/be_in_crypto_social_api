@@ -50,6 +50,8 @@ pub trait LikeDbRepository: Send + Sync {
         &self,
         items: &[ContentItem],
     ) -> Result<Vec<ContentCount>, DomainError>;
+
+    async fn health_check(&self) -> Result<(), DomainError>;
 }
 #[async_trait]
 pub trait LikeCacheRepository: Send + Sync {
@@ -96,4 +98,6 @@ pub trait LikeCacheRepository: Send + Sync {
         c_type: &ContentType,
         seconds: i64,
     ) -> Result<Vec<String>, DomainError>;
+
+    async fn health_check(&self) -> Result<(), DomainError>;
 }

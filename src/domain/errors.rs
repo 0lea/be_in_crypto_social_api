@@ -20,11 +20,17 @@ pub enum DomainError {
     #[error("External service deserialize error: {service} (Circuit Breaker close)")]
     DependencyDeserializeError { service: String },
 
+    #[error("External service healt error: {0}")]
+    DependencyHealtError(String),
+
     #[error("Database internal error: {0}")]
     DatabaseError(String),
 
     #[error("Database error: not found: {0}")]
     DatabaseNotFound(String),
+
+    #[error("Database healt error: {0}")]
+    DatabaseHealthError(String),
 
     #[error("Database indeponet error: {0}")]
     AlreadyExists(String),
@@ -34,6 +40,9 @@ pub enum DomainError {
 
     #[error("Cache missing")]
     CacheMiss,
+
+    #[error("Cache healt error : {0}")]
+    CacheHealthError(String),
 
     #[error("Cursor malformed error: {0}")]
     InvalidCursor(String),

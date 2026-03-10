@@ -9,6 +9,7 @@ use crate::{
             delete_unlike, get_count, get_count_batch, get_status, get_status_batch,
             get_user_likes, post_like,
         },
+        health,
         middleware::{auth_middleware, tracing_middleware},
     },
     application::like_service::LikeService,
@@ -41,10 +42,12 @@ pub fn create_app(
             auth_middleware,
         ));
 
+    let health_routes: Router<Arc<LikeService>> = health::healt_router();
     let v1_routes = public_routes.merge(protected_routes);
 
     Router::new()
-        .nest("/v1", v1_routes) // Un solo nest, zero ambiguità
+        .nest("/health", health_routes)
+        .nest("/v1", v1_routes)
         .with_state(like_service)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(from_fn(tracing_middleware))

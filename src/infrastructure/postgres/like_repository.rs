@@ -209,7 +209,7 @@ impl LikeDbRepository for PostgresLikeRepository {
         cursor: Option<PaginationCursor>,
         limit: usize,
     ) -> Result<Vec<Like>, DomainError> {
-        let items = sqlx::query_as!(
+        sqlx::query_as!(
             Like,
             r#"
                 SELECT id, user_id, content_id, content_type, created_at
@@ -228,8 +228,14 @@ impl LikeDbRepository for PostgresLikeRepository {
         )
         .fetch_all(&*self.pool)
         .await
-        .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))
+    }
 
-        Ok(items.into_iter().map(Into::into).collect())
+    async fn health_check(&self) -> Result<(), DomainError> {
+        sqlx::query("SELECT 1")
+            .execute(&*self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| DomainError::DatabaseHealthError(e.to_string()))
     }
 }

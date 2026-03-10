@@ -369,4 +369,12 @@ impl LikeService {
             next_cursor,
         })
     }
+
+    pub async fn full_health_check(&self) -> Result<(), DomainError> {
+        self.db_repo.health_check().await?;
+        self.cache_repo.health_check().await?;
+        self.extern_repo.health_check().await?;
+
+        Ok(())
+    }
 }
