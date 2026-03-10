@@ -8,6 +8,7 @@ use crate::{
 use base64::{Engine, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 // crud
@@ -54,13 +55,6 @@ pub struct CountResponse {
 pub struct StatusResponse {
     pub liked: bool,
     pub liked_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub message: String,
-    pub request_id: String,
 }
 
 // batch
@@ -169,4 +163,18 @@ pub struct TopLikeItem {
     pub content_type: String,
     pub content_id: String,
     pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: ErrorDetail,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorDetail {
+    pub code: String,
+    pub message: String,
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
