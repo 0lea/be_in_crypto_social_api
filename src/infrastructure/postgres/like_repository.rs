@@ -1,5 +1,5 @@
 use crate::{
-    api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor, TopLikeItem},
+    api::dto::{ContentCount, ContentItem, PaginationCursor, TopLikeItem},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, Like, LikeDbRepository},

@@ -4,7 +4,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     api::dto::{
-        BatchRequest, BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
+        BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
         PaginationCursor, StatusResponse, TopLikesResponse, UnlikeResponse, UserLikesResponse,
     },
     application::commands::{AddLikeCommand, AddLikeCommandResult},

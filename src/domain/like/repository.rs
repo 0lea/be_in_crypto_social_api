@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 
-use crate::api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor, TopLikeItem};
+use crate::api::dto::{ContentCount, ContentItem, PaginationCursor, TopLikeItem};
 use crate::domain::errors::DomainError;
 use crate::domain::like::{ContentId, ContentType, Like};
 use crate::domain::user::UserId;

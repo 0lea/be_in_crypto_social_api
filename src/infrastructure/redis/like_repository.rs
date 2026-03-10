@@ -1,5 +1,5 @@
 use crate::{
-    api::dto::{BatchCountResponse, ContentCount, ContentItem, TopLikeItem},
+    api::dto::{ContentCount, ContentItem, TopLikeItem},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, LikeCacheRepository},
@@ -9,7 +9,6 @@ use crate::{
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use std::{collections::HashMap, sync::Arc};
-use uuid::Uuid;
 
 enum LeadKeyType {
     Data,

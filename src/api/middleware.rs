@@ -10,7 +10,7 @@ use axum::{
     response::Response,
 };
 use std::{sync::Arc, time::Instant};
-use tracing::{Instrument, info, info_span};
+use tracing::{Instrument, info_span};
 use uuid::Uuid;
 
 pub async fn auth_middleware(
