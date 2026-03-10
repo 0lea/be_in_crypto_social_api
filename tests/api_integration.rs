@@ -209,9 +209,237 @@ async fn test_edge_cases(pool: PgPool) {
         .await;
     res.assert_status(StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_batch_count(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool, mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    let test_post_id = &uuid::Uuid::new_v4().to_string();
+    let test_user_id = "550e8400-e29b-41d4-a716-446655440001";
+    let test_user_id_2 = "550e8400-e29b-41d4-a716-446655440002";
+
+    auth_ok(test_user_id, &mock_server).await;
+    auth_ok(test_user_id_2, &mock_server).await;
+    post_ok(test_post_id, &mock_server).await;
+
+    let mut expected_res = HashMap::with_capacity(100);
+
+    for j in 0..100 {
+        let is_even = j % 2 == 0;
+
+        let post_id = uuid::Uuid::new_v4().to_string();
+
+        let mut count = 0;
+
+        post_ok(&post_id, &mock_server).await;
+
+        // create 1
+        let res = server
+            .post("/v1/likes")
+            .add_header("Authorization", format!("Bearer {}", test_user_id))
+            .json(&json!({"content_type": "post", "content_id": post_id}))
+            .await;
+        res.assert_status(StatusCode::CREATED);
+        assert_eq!(res.json::<Value>()["liked"], true);
+        assert_eq!(res.json::<Value>()["count"], 1);
+
+        count += 1;
+
+        if is_even {
+            let res = server
+                .post("/v1/likes")
+                .add_header("Authorization", format!("Bearer {}", test_user_id_2))
+                .json(&json!({"content_type": "post", "content_id": post_id}))
+                .await;
+            res.assert_status(StatusCode::CREATED);
+            assert_eq!(res.json::<Value>()["liked"], true);
+            assert_eq!(res.json::<Value>()["count"], 2);
+            count += 1;
+        }
+        expected_res.insert(post_id, count);
+    }
+
+    let batch_items: Vec<Value> = expected_res
+        .keys()
+        .map(|id| {
+            json!({
+                "content_type": "post",
+                "content_id": id
+            })
+        })
+        .collect();
+
+    let res = server
+        .post("/v1/likes/batch/counts")
+        .json(&json!({ "items": batch_items }))
+        .await;
+    res.assert_status(StatusCode::OK);
+
+    let actual_res: Vec<Value> = res.json();
+    assert_eq!(actual_res.len(), 100, "must have 100 elements");
+
+    for item in actual_res {
+        let content_id = item["content_id"].as_str().unwrap();
+        let actual_count = item["count"].as_u64().unwrap();
+
+        let expected_count = expected_res.get(content_id).expect("ID not found");
+
+        assert_eq!(
+            actual_count, *expected_count,
+            "wrong count for post {}",
+            content_id
+        );
+    }
+
+    // flush redis
+    let redis_url = std::env::var("REDIS_TEST_URL").unwrap_or("redis://127.0.0.1:6379/2".into());
+    let redis_client = redis::Client::open(redis_url).unwrap();
+    let mut conn = redis_client
+        .get_connection()
+        .expect("Failed to connect to Redis for cleanup");
+    let _: () = redis::cmd("FLUSHDB")
+        .query(&mut conn)
+        .expect("Failed to flush Redis");
+
+    // retest with DB fallback
+    let res = server
+        .post("/v1/likes/batch/counts")
+        .json(&json!({ "items": batch_items }))
+        .await;
+    res.assert_status(StatusCode::OK);
+
+    let actual_res: Vec<Value> = res.json();
+    assert_eq!(actual_res.len(), 100, "must have 100 elements");
+
+    // let the fire and forget refresh work
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    for item in actual_res {
+        let content_id = item["content_id"].as_str().unwrap();
+        let actual_count = item["count"].as_u64().unwrap();
+
+        let expected_count = expected_res.get(content_id).expect("ID not found");
+
+        assert_eq!(
+            actual_count, *expected_count,
+            "wrong count for post {}",
+            content_id
+        );
+    }
 }
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_batch_statuses(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool, mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    let test_user_id = "550e8400-e29b-41d4-a716-446655440001";
+
+    let mut liked_ids = std::collections::HashSet::new();
+    let mut all_items = Vec::new();
+
+    auth_ok(test_user_id, &mock_server).await;
+
+    for i in 0..100 {
+        let content_id = uuid::Uuid::new_v4().to_string();
+        let content_type = if i % 2 == 0 { "post" } else { "bonus_hunter" };
+
+        match content_type {
+            "post" => post_ok(&content_id, &mock_server).await,
+            "bonus_hunter" => {
+                bonus_hunter_ok(&content_id, &mock_server).await;
+            }
+            _ => post_ok(&content_id, &mock_server).await,
+        }
+
+        all_items.push(json!({
+            "content_type": content_type,
+            "content_id": content_id
+        }));
+
+        if i < 50 {
+            let res = server
+                .post("/v1/likes")
+                .add_header("Authorization", format!("Bearer {}", test_user_id))
+                .json(&json!({
+                    "content_type": content_type,
+                    "content_id": content_id
+                }))
+                .await;
+
+            res.assert_status(StatusCode::CREATED);
+            liked_ids.insert(content_id);
+        }
+    }
+
+    let res = server
+        .post("/v1/likes/batch/statuses")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .json(&json!({ "items": all_items }))
         .await;
 
-    // Deve fallire perché manca l'header Authorization gestito dal tuo middleware
-    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    res.assert_status(StatusCode::OK);
+
+    let body: Value = res.json();
+    let results = body["results"]
+        .as_array()
+        .expect("results must be an array");
+
+    assert_eq!(
+        results.len(),
+        100,
+        "La risposta deve contenere esattamente 100 elementi"
+    );
+
+    for item in results {
+        let c_id = item["content_id"].as_str().expect("ID mancante");
+        let is_liked = item["liked"].as_bool().expect("liked field mancante");
+        let liked_at = &item["liked_at"];
+
+        if liked_ids.contains(c_id) {
+            assert!(
+                is_liked,
+                "Il contenuto {} doveva risultare liked: true",
+                c_id
+            );
+            assert!(
+                !liked_at.is_null(),
+                "Il contenuto {} doveva avere un timestamp liked_at",
+                c_id
+            );
+        } else {
+            assert!(
+                !is_liked,
+                "Il contenuto {} doveva risultare liked: false",
+                c_id
+            );
+            assert!(
+                liked_at.is_null(),
+                "Il contenuto {} NON doveva avere un timestamp",
+                c_id
+            );
+        }
+    }
+
+    let other_user = "550e8400-e29b-41d4-a716-446655440003";
+    auth_ok(other_user, &mock_server).await;
+
+    let res_other = server
+        .post("/v1/likes/batch/statuses")
+        .add_header("Authorization", format!("Bearer {}", other_user))
+        .json(&json!({ "items": all_items }))
+        .await;
+
+    let body_other: Value = res_other.json();
+    for item in body_other["results"].as_array().unwrap() {
+        assert_eq!(
+            item["liked"], false,
+            "L'utente 2 non dovrebbe vedere i like dell'utente 1"
+        );
+    }
 }

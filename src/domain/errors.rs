@@ -8,6 +8,9 @@ pub enum DomainError {
     #[error("Resource not found: {resource} with ID {id}")]
     NotFound { resource: String, id: String },
 
+    #[error("Error max batch size exceeded: {0}")]
+    BatchTooLarge(usize),
+
     #[error("External service unavailable: {service} (Circuit Breaker active)")]
     DependencyUnavailable { service: String },
 
@@ -20,8 +23,17 @@ pub enum DomainError {
     #[error("Database internal error: {0}")]
     DatabaseError(String),
 
+    #[error("Database error: not found: {0}")]
+    DatabaseNotFound(String),
+
+    #[error("Database indeponet error: {0}")]
+    AlreadyExists(String),
+
     #[error("Cache error: {0}")]
     CacheError(String),
+
+    #[error("Cache missing")]
+    CacheMiss,
 
     #[error("Infrastructure error: {0}")]
     InfrastructureError(String),

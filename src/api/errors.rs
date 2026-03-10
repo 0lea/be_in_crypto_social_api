@@ -11,7 +11,7 @@ impl IntoResponse for ApiError {
 
         let (status, message) = match self.0 {
             DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "Invalid session token"),
-            DomainError::DependencyNotFound { service: _ } => {
+            DomainError::DependencyNotFound { service: _ } | DomainError::DatabaseNotFound(_) => {
                 (StatusCode::NOT_FOUND, "Content not found")
             }
             DomainError::DependencyUnavailable { service: _ } => {

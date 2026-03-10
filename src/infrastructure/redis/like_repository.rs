@@ -1,6 +1,9 @@
-use crate::domain::{
-    errors::DomainError,
-    like::{ContentId, ContentType, LikeCacheRepository},
+use crate::{
+    api::dto::{BatchCountResponse, ContentCount, ContentItem},
+    domain::{
+        errors::DomainError,
+        like::{ContentId, ContentType, LikeCacheRepository},
+    },
 };
 
 use async_trait::async_trait;
@@ -133,30 +136,57 @@ impl LikeCacheRepository for RedisLikeRepository {
         res
     }
 
-    async fn get_counts_batch(
-        &self,
-        c_type: &ContentType,
-        ids: &[ContentId],
-    ) -> Result<HashMap<Uuid, u64>, DomainError> {
-        if ids.is_empty() {
+    async fn get_counts_batch<'a>(
+        &'a self,
+        items: &'a [ContentItem],
+    ) -> Result<HashMap<ContentId, (&'a str, u64)>, DomainError> {
+        if items.is_empty() {
             return Ok(HashMap::new());
         }
-
         let mut conn = self.get_conn().await?;
 
-        let keys: Vec<String> = ids.iter().map(|id| self.format_key(c_type, id)).collect();
+        let keys: Vec<String> = items
+            .iter()
+            .map(|i| self.format_key(&i.content_type, &i.content_id))
+            .collect();
 
         let values: Vec<Option<u64>> = conn
             .mget(keys)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        let mut result = HashMap::new();
-        for (i, val) in values.into_iter().enumerate() {
-            result.insert(ids[i].0, val.unwrap_or(0));
+        let mut result = HashMap::with_capacity(items.len());
+
+        for (item, opt_count) in items.iter().zip(values.into_iter()) {
+            match opt_count {
+                Some(count) => {
+                    result.insert(item.content_id, (item.content_type.as_str(), count));
+                }
+                None => return Err(DomainError::CacheMiss),
+            }
         }
 
         Ok(result)
+    }
+
+    async fn set_counts_batch(&self, counts: Vec<ContentCount>) -> Result<(), DomainError> {
+        if counts.is_empty() {
+            return Ok(());
+        }
+
+        let mut pipe = redis::pipe();
+
+        for i in counts {
+            let key = self.format_key(&i.content_type, &i.content_id);
+            pipe.set_ex(key, i.count, 3600);
+        }
+
+        let mut conn = self.get_conn().await?;
+        pipe.query_async::<()>(&mut conn)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        Ok(())
     }
 
     async fn update_leaderboard(

@@ -1,10 +1,14 @@
 use crate::{
     api::{
-        dto::{LikeRequest, LikeResponse},
+        dto::{BatchRequest, LikeRequest, LikeResponse},
         errors::ApiError,
     },
     application::{commands::AddLikeCommand, like_service::LikeService},
-    domain::{errors::DomainError, user::UserId},
+    domain::{
+        errors::DomainError,
+        like::{ContentId, ContentType},
+        user::UserId,
+    },
 };
 use axum::{
     Extension, Json,
@@ -65,5 +69,22 @@ pub async fn get_status(
     let res = service.get_like_status(&user_id, &c_type, &c_id).await?;
     Ok((StatusCode::OK, Json(res)))
 }
+
+#[tracing::instrument(skip(service))]
+pub async fn get_count_batch(
+    State(service): State<Arc<LikeService>>,
+    Json(payload): Json<BatchRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let res = service.get_likes_count_batch(payload.items).await?;
+    Ok((StatusCode::OK, Json(res)))
 }
+
+#[tracing::instrument(skip(service))]
+pub async fn get_status_batch(
+    Extension(user_id): Extension<UserId>,
+    State(service): State<Arc<LikeService>>,
+    Json(payload): Json<BatchRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let res = service.get_batch_status(&user_id, payload.items).await?;
+    Ok((StatusCode::OK, Json(res)))
 }

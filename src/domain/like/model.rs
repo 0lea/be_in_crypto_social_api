@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::user::model::UserId;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, Copy)]
 pub struct ContentId(pub Uuid);
 
 impl fmt::Display for ContentId {
@@ -15,12 +15,24 @@ impl fmt::Display for ContentId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+impl From<Uuid> for ContentId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct ContentType(String);
 
 impl fmt::Display for ContentType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for ContentType {
+    fn from(value: String) -> Self {
+        Self(value)
     }
 }
 
@@ -33,7 +45,7 @@ impl ContentType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Like {
     pub user_id: UserId,
     pub content_type: ContentType,

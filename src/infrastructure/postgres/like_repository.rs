@@ -1,12 +1,16 @@
-use crate::domain::{
-    errors::DomainError,
-    like::{ContentId, ContentType, Like, LikeDbRepository},
-    user::UserId,
+use crate::{
+    api::dto::{BatchRequest, ContentCount, ContentItem},
+    domain::{
+        errors::DomainError,
+        like::{ContentId, ContentType, Like, LikeDbRepository},
+        user::UserId,
+    },
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub struct PostgresLikeRepository {
     pool: Arc<PgPool>,
@@ -63,6 +67,34 @@ impl LikeDbRepository for PostgresLikeRepository {
         .await
         .map_err(|e| DomainError::DatabaseError(e.to_string()))
     }
+
+    async fn get_likes_by_pairs(
+        &self,
+        user_id: &UserId,
+        items: &[ContentItem],
+    ) -> Result<Vec<Like>, DomainError> {
+        let types: Vec<String> = items.iter().map(|i| i.content_type.to_string()).collect();
+        let ids: Vec<Uuid> = items.iter().map(|i| i.content_id.0).collect();
+
+        sqlx::query_as!(
+            Like,
+            r#"
+            SELECT user_id, content_type, content_id, created_at 
+            FROM likes
+            WHERE user_id = $1
+              AND (content_type, content_id) IN (
+                SELECT * FROM UNNEST($2::text[], $3::uuid[])
+              )
+            "#,
+            user_id.0,
+            &types,
+            &ids
+        )
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))
+    }
+
     async fn remove(
         &self,
         user_id: &UserId,
@@ -126,6 +158,50 @@ impl LikeDbRepository for PostgresLikeRepository {
     // }
     //
     //
+
+    async fn get_counts_batch(
+        &self,
+        items: &[ContentItem],
+    ) -> Result<Vec<ContentCount>, DomainError> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let types: Vec<String> = items.iter().map(|i| i.content_type.to_string()).collect();
+        let ids: Vec<Uuid> = items.iter().map(|i| i.content_id.0).collect();
+
+        let rows = sqlx::query!(
+            r#"
+        SELECT 
+            input.c_type as "content_type!", 
+            input.c_id as "content_id!", 
+            COUNT(l.id) as "count!"
+        FROM 
+            UNNEST($1::text[], $2::uuid[]) AS input(c_type, c_id)
+        LEFT JOIN 
+            likes l ON l.content_type = input.c_type AND l.content_id = input.c_id
+        GROUP BY 
+            input.c_type, input.c_id
+        "#,
+            &types,
+            &ids
+        )
+        .fetch_all(&*self.pool) // self.pool è l'Arc<PgPool>
+        .await
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
+
+        let results = rows
+            .into_iter()
+            .map(|row| ContentCount {
+                content_type: row.content_type.into(),
+                content_id: row.content_id.into(),
+                count: row.count as u64,
+            })
+            .collect();
+
+        Ok(results)
+    }
+
     async fn get_user_likes(
         &self,
         user_id: &UserId,

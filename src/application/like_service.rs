@@ -2,6 +2,10 @@ use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    api::dto::{
+        BatchRequest, BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
+        StatusResponse, UnlikeResponse,
+    },
     application::commands::{AddLikeCommand, AddLikeCommandResult},
     domain::{
         errors::DomainError,
@@ -217,19 +221,115 @@ impl LikeService {
         Ok(res)
     }
 
+    /// As this is a performance-critical hot path, allocations and clones are strictly avoided
+    /// except for the mandatory database fallback scenario.
+    /// Implements a non-blocking "fire-and-forget" strategy for cache hydration.
+    pub async fn get_likes_count_batch(
+        &self,
+        items: Vec<ContentItem>,
+    ) -> Result<Vec<ContentCount>, DomainError> {
+        if items.len() > 100 {
+            return Err(DomainError::BatchTooLarge(items.len()));
         }
 
+        let cache_res = self.cache_repo.get_counts_batch(&items).await;
 
+        if let Ok(hash_map) = cache_res {
+            // Decouple counts from the map to release the borrow on 'items'
 
+            let counts_only: HashMap<ContentId, u64> = hash_map
+                .into_iter()
+                .map(|(id, (_, count))| (id, count))
+                .collect();
 
+            // Consume 'items' to build the response without additional allocations
+            let res: Vec<ContentCount> = items
+                .into_iter()
+                .map(|item| {
+                    let count = counts_only.get(&item.content_id).copied().unwrap_or(0);
 
+                    ContentCount {
+                        content_id: item.content_id,
+                        content_type: item.content_type, // Move ownership: Zero-clone
+                        count,
+                    }
+                })
+                .collect();
 
+            return Ok(res);
+        }
 
+        tracing::error!(
+            "Cache miss or failure, falling back to DB: {:?}",
+            cache_res.unwrap_err()
+        );
+
+        let content_count = self
+            .db_repo
+            .get_counts_batch(&items)
+            .await
+            .inspect_err(|_| {
+                tracing::error!("Critical: Db fallback failure");
+            })?;
+
+        let cache_repo = self.cache_repo.clone();
+        // Cache hydration: Clone occurs only in the worst-case scenario (cache miss)
+        let content_count_cl = content_count.clone();
+
+        // Fire and Forget: update cache asynchronously to avoid latency on the main path
+        tokio::spawn(async move {
+            if let Err(e) = cache_repo.set_counts_batch(content_count_cl).await {
+                warn!("Failed to refresh cache from DB: {:?}", e);
+            } else {
+                warn!("Refresh cache from db succedes");
+            }
+        });
+
+        Ok(content_count)
     }
 
+    // since there is a limit of 100 pair, i choose to calc the delta between db_resp | request
+    // in app layer insted of a join on the db to reduce the db load
+    pub async fn get_batch_status(
+        &self,
+        user_id: &UserId,
+        items: Vec<ContentItem>,
+    ) -> Result<BatchStatusResponse, DomainError> {
+        if items.len() > 100 {
+            return Err(DomainError::BatchTooLarge(items.len()));
+        }
 
+        let db_likes = self.db_repo.get_likes_by_pairs(user_id, &items).await?;
 
+        let mut liked_map: HashMap<(ContentType, ContentId), chrono::DateTime<Utc>> =
+            HashMap::with_capacity(db_likes.len());
+        for record in db_likes {
+            liked_map.insert((record.content_type, record.content_id), record.created_at);
+        }
 
+        let results = items
+            .into_iter()
+            .map(|item| {
+                let key = (item.content_type.clone(), item.content_id);
 
+                if let Some(created_at) = liked_map.get(&key) {
+                    ContentStatus {
+                        content_type: item.content_type,
+                        content_id: item.content_id,
+                        liked: true,
+                        liked_at: Some(*created_at),
+                    }
+                } else {
+                    ContentStatus {
+                        content_type: item.content_type,
+                        content_id: item.content_id,
+                        liked: false,
+                        liked_at: None,
+                    }
+                }
+            })
+            .collect();
+
+        Ok(BatchStatusResponse { results })
     }
 }
