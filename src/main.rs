@@ -3,8 +3,8 @@ use social_api::{
     create_app,
     domain::external_validator::ExternalValidator,
     infrastructure::{
-        clients::http_external_validator::HttpExternalValidator, observability::init_observability,
-        postgres::like_repository::PostgresLikeRepository,
+        clients::http_external_validator::HttpExternalValidator, config::Config,
+        observability::init_observability, postgres::like_repository::PostgresLikeRepository,
         redis::like_repository::RedisLikeRepository,
     },
 };
@@ -13,20 +13,36 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL missing");
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL missing");
-
-    let pool = init_db(db_url).await;
+    // 1. Caricamento fail-fast della config
+    let config = Config::from_env();
 
     init_observability();
 
-    let redis_client = redis::Client::open(redis_url).unwrap();
+    // 2. Inizializzazione Pool connessioni usando i valori della config
+    let pool = PgPoolOptions::new()
+        .max_connections(config.db_max_connections)
+        .min_connections(config.db_min_connections)
+        .connect(&config.database_url)
+        .await
+        .expect("Failed to connect to Database");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Migrations failed");
+
+    let redis_client =
+        redis::Client::open(config.redis_url.clone()).expect("Failed to connect to Redis");
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
     let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
 
-    let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::from_env());
+    // 3. Il validatore riceve la mappa dinamica dei Content API!
+    let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
+        config.profile_api_url.clone(),
+        config.content_apis.clone(),
+    ));
+
     let like_service = Arc::new(LikeService::new(
         db_repo,
         cache_repo,
@@ -35,21 +51,19 @@ async fn main() {
 
     let app = create_app(like_service, extern_validator);
 
-    println!("Server ready on 0.0.0.0:8000");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
+    let addr = format!("0.0.0.0:{}", config.http_port);
+    println!("Server ready on {}", addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
-async fn init_db(db_url: String) -> sqlx::Pool<sqlx::Postgres> {
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&db_url)
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
         .await
-        .expect("Migrations failed");
-    pool
+        .expect("Failed to install CTRL+C signal handler");
+    tracing::info!("Shutdown signal received, starting graceful shutdown...");
 }

@@ -10,49 +10,34 @@ use crate::{
 };
 use async_trait::async_trait;
 use reqwest::StatusCode;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 const PROFILE_API: &str = "Profile API";
-const CONTENT_API: &str = "Content API";
 
 pub struct HttpExternalValidator {
     client: reqwest::Client,
     profile_service_url: String,
-    content_service_url: String,
+    content_apis: HashMap<String, String>, // Astrazione dinamica dei content types
     breaker: CircuitBreaker,
 }
 
 impl HttpExternalValidator {
-    pub fn new(profile_url: String, content_url: String) -> Self {
+    pub fn new(profile_url: String, content_apis: HashMap<String, String>) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()
                 .expect("Failed to create reqwest client"),
             profile_service_url: profile_url,
-            content_service_url: content_url,
+            content_apis,
             breaker: CircuitBreaker::from_env(),
         }
-    }
-
-    pub fn from_env() -> Self {
-        let profile_url = std::env::var("PROFILE_API_URL").expect("missing PROFILE_API_URL env");
-        let content_url = std::env::var("CONTENT_API_URL").expect("missing CONTENT_API_URL env");
-
-        Self::new(profile_url, content_url)
-    }
-}
-
-impl Default for HttpExternalValidator {
-    fn default() -> Self {
-        Self::from_env()
     }
 }
 
 #[async_trait]
 impl ExternalValidator for HttpExternalValidator {
-    #[tracing::instrument(skip(self, token), fields(service = "profile_api", method = "GET"))]
-
     async fn validate_user(&self, token: &UserId) -> Result<Uuid, DomainError> {
         let url = format!("{}/v1/auth/validate", self.profile_service_url);
         let req_closure = async {
@@ -94,17 +79,19 @@ impl ExternalValidator for HttpExternalValidator {
         c_type: &ContentType,
         c_id: &ContentId,
     ) -> Result<Uuid, DomainError> {
-        let url = format!(
-            "{}/v1/{}/{}",
-            self.content_service_url,
-            c_type.as_str(),
-            c_id
-        );
+        let base_url = self.content_apis.get(c_type.as_str()).ok_or_else(|| {
+            DomainError::UnknownContentType {
+                content_type: c_type.to_string(),
+            }
+        })?;
+
+        let url = format!("{}/v1/{}/{}", base_url, c_type.as_str(), c_id);
+        let service_name = format!("{} API", c_type.as_str().to_uppercase());
 
         let req_closure = async {
-            let response = self.client.get(url).send().await.map_err(|_| {
+            let response = self.client.get(&url).send().await.map_err(|_| {
                 DomainError::DependencyUnavailable {
-                    service: CONTENT_API.into(),
+                    service: service_name.clone(),
                 }
             })?;
 
@@ -112,18 +99,17 @@ impl ExternalValidator for HttpExternalValidator {
                 s if s.is_success() => {
                     let content: ContentDto = response.json().await.map_err(|_| {
                         DomainError::DependencyDeserializeError {
-                            service: CONTENT_API.into(),
+                            service: service_name.clone(),
                         }
                     })?;
                     Ok(content.id)
                 }
-
-                StatusCode::NOT_FOUND => Err(DomainError::DependencyNotFound {
-                    service: CONTENT_API.into(),
+                StatusCode::NOT_FOUND => Err(DomainError::ContentNotFound {
+                    content_type: c_type.to_string(),
+                    content_id: c_id.to_string(),
                 }),
-
                 _ => Err(DomainError::DependencyUnavailable {
-                    service: CONTENT_API.into(),
+                    service: service_name.clone(),
                 }),
             }
         };
