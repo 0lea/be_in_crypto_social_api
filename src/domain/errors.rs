@@ -35,6 +35,9 @@ pub enum DomainError {
     #[error("Cache missing")]
     CacheMiss,
 
+    #[error("Cursor malformed error: {0}")]
+    InvalidCursor(String),
+
     #[error("Infrastructure error: {0}")]
     InfrastructureError(String),
 

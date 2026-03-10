@@ -1,8 +1,14 @@
 use crate::{
     application::commands::AddLikeCommandResult,
-    domain::like::{ContentId, ContentType},
+    domain::{
+        errors::DomainError,
+        like::{ContentId, ContentType, Like},
+    },
 };
+use base64::{Engine, engine::general_purpose};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // crud
 #[derive(Deserialize, Debug)]
@@ -91,4 +97,54 @@ pub struct ContentStatus {
     pub content_id: ContentId,
     pub liked: bool,
     pub liked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserLikesQuery {
+    pub content_type: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserLikesResponse {
+    pub items: Vec<LikedItemDto>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LikedItemDto {
+    pub content_type: String,
+    pub content_id: String,
+    pub liked_at: DateTime<Utc>,
+}
+
+impl From<Like> for LikedItemDto {
+    fn from(like: Like) -> Self {
+        Self {
+            content_type: like.content_type.to_string(),
+            content_id: like.content_id.to_string(),
+            liked_at: like.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginationCursor {
+    pub t: DateTime<Utc>,
+    pub id: Uuid,
+}
+
+impl PaginationCursor {
+    pub fn decode_opt(cursor_str: Option<String>) -> Result<Option<Self>, DomainError> {
+        cursor_str
+            .map(|s| {
+                let decoded = general_purpose::STANDARD
+                    .decode(s)
+                    .map_err(|_| DomainError::InvalidCursor("Bad Base64".into()))?;
+                serde_json::from_slice(&decoded)
+                    .map_err(|_| DomainError::InvalidCursor("Bad JSON".into()))
+            })
+            .transpose()
+    }
 }

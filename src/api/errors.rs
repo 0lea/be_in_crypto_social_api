@@ -17,6 +17,8 @@ impl IntoResponse for ApiError {
             DomainError::DependencyUnavailable { service: _ } => {
                 (StatusCode::SERVICE_UNAVAILABLE, "Service unavaiable")
             }
+            DomainError::InvalidCursor(_) => (StatusCode::BAD_REQUEST, "BAD_CURSOR"),
+
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Errore interno del server",

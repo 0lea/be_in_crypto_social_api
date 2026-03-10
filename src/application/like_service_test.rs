@@ -2,7 +2,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        api::dto::{ContentCount, ContentItem},
+        api::dto::{ContentCount, ContentItem, PaginationCursor},
         application::{commands::AddLikeCommand, like_service::LikeService},
         domain::{
             errors::DomainError,
@@ -46,9 +46,10 @@ mod tests {
 
     async fn get_user_likes(
         &self,
-        user_id: &UserId,
-        cursor: Option<DateTime<Utc>>,
-        limit: u64,
+        user_id: UserId,
+        content_type: Option<String>,
+        cursor: Option<PaginationCursor>,
+        limit: usize,
     ) -> Result<Vec<Like>, DomainError>;
 
     async fn get_counts_batch(

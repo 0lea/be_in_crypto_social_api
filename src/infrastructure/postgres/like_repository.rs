@@ -1,5 +1,5 @@
 use crate::{
-    api::dto::{BatchRequest, ContentCount, ContentItem},
+    api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, Like, LikeDbRepository},
@@ -56,7 +56,7 @@ impl LikeDbRepository for PostgresLikeRepository {
         sqlx::query_as!(
             Like,
             r#"
-            SELECT user_id, content_type, content_id, created_at FROM likes 
+            SELECT id, user_id, content_type, content_id, created_at FROM likes 
             WHERE user_id = $1 AND content_type = $2 AND content_id = $3
             "#,
             user_id.0,
@@ -79,7 +79,7 @@ impl LikeDbRepository for PostgresLikeRepository {
         sqlx::query_as!(
             Like,
             r#"
-            SELECT user_id, content_type, content_id, created_at 
+            SELECT id, user_id, content_type, content_id, created_at 
             FROM likes
             WHERE user_id = $1
               AND (content_type, content_id) IN (
@@ -204,38 +204,32 @@ impl LikeDbRepository for PostgresLikeRepository {
 
     async fn get_user_likes(
         &self,
-        user_id: &UserId,
-        cursor: Option<DateTime<Utc>>,
-        limit: u64,
+        user_id: UserId,
+        content_type: Option<String>,
+        cursor: Option<PaginationCursor>,
+        limit: usize,
     ) -> Result<Vec<Like>, DomainError> {
-        let rows = sqlx::query!(
+        let items = sqlx::query_as!(
+            Like,
             r#"
-        SELECT user_id, content_type, content_id, created_at
-        FROM likes
-        WHERE user_id = $1 
-          AND ($2::timestamptz IS NULL OR created_at < $2)
-        ORDER BY created_at DESC
-        LIMIT $3
-        "#,
+                SELECT id, user_id, content_id, content_type, created_at
+                FROM likes
+                WHERE user_id = $1
+                AND ($2::text IS NULL OR content_type = $2)
+                AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+                ORDER BY created_at DESC, id DESC
+                LIMIT $5
+            "#,
             user_id.0,
-            cursor,
+            content_type,
+            cursor.as_ref().map(|c| c.t),
+            cursor.as_ref().map(|c| c.id),
             limit as i64
         )
         .fetch_all(&*self.pool)
         .await
-        .map_err(|e| {
-            tracing::error!("Errore paginazione: {:?}", e);
-            DomainError::DatabaseError("dsd".to_owned())
-        })?;
+        .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| Like {
-                user_id: UserId(row.user_id),
-                content_type: ContentType::new(&row.content_type),
-                content_id: ContentId(row.content_id),
-                created_at: row.created_at,
-            })
-            .collect())
+        Ok(items.into_iter().map(Into::into).collect())
     }
 }

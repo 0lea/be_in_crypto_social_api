@@ -1,10 +1,11 @@
+use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     api::dto::{
         BatchRequest, BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
-        StatusResponse, UnlikeResponse,
+        PaginationCursor, StatusResponse, UnlikeResponse, UserLikesResponse,
     },
     application::commands::{AddLikeCommand, AddLikeCommandResult},
     domain::{
@@ -52,6 +53,7 @@ impl LikeService {
             content_type: like_cmd.content_type.clone(),
             content_id: like_cmd.content_id.clone(),
             created_at,
+            ..Default::default()
         };
 
         let already_exists = self.db_repo.save(&like).await?;
@@ -136,6 +138,7 @@ impl LikeService {
                         content_type: content_type.clone(),
                         content_id: content_id.clone(),
                         created_at: chrono::Utc::now(),
+                        ..Default::default()
                     };
                     let _ = self
                         .db_repo
@@ -331,5 +334,39 @@ impl LikeService {
             .collect();
 
         Ok(BatchStatusResponse { results })
+    }
+
+    pub async fn get_user_liked_items(
+        &self,
+        user_id: UserId,
+        content_type: Option<String>,
+        cursor_str: Option<String>,
+        limit: usize,
+    ) -> Result<UserLikesResponse, DomainError> {
+        let cursor = PaginationCursor::decode_opt(cursor_str)?;
+
+        let mut items = self
+            .db_repo
+            .get_user_likes(user_id, content_type, cursor, limit + 1)
+            .await?;
+
+        // 3. Controlla se c'è un'altra pagina
+        let mut next_cursor = None;
+        if items.len() > limit {
+            let last_item = &items[limit - 1];
+            let next_cursor_obj = PaginationCursor {
+                t: last_item.created_at,
+                id: last_item.id, // Assumendo che il domain model abbia l'ID della riga
+            };
+
+            let serialized = serde_json::to_vec(&next_cursor_obj).unwrap();
+            next_cursor = Some(general_purpose::STANDARD.encode(serialized));
+            items.truncate(limit);
+        }
+
+        Ok(UserLikesResponse {
+            items: items.into_iter().map(Into::into).collect(),
+            next_cursor,
+        })
     }
 }

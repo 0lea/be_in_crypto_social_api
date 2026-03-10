@@ -443,3 +443,135 @@ async fn test_batch_statuses(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_user_likes_pagination_and_filtering(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let app = setup_test_app(pool, mock_server.uri()).await;
+    let server = TestServer::new(app);
+
+    let test_user_id = uuid::Uuid::new_v4().to_string();
+    auth_ok(&test_user_id, &mock_server).await;
+
+    // 1. Setup: Creiamo 25 likes (15 post, 10 bonus_hunter)
+    // Li inseriamo con un piccolo delay o in ordine per testare il sorting DESC
+    for i in 0..25 {
+        let content_id = uuid::Uuid::new_v4().to_string();
+        let content_type = if i < 15 { "post" } else { "bonus_hunter" };
+
+        // Mock dei servizi esterni
+        if i < 15 {
+            post_ok(&content_id, &mock_server).await;
+        } else {
+            bonus_hunter_ok(&content_id, &mock_server).await;
+        }
+
+        server
+            .post("/v1/likes")
+            .add_header("Authorization", format!("Bearer {}", test_user_id))
+            .json(&json!({ "content_type": content_type, "content_id": content_id }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Un piccolo sleep non guasta per garantire timestamp diversi se il DB è troppo veloce,
+        // anche se il nostro cursore gestisce i duplicati tramite ID.
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    }
+
+    // --- CASE A: Paginazione completa (senza filtri) ---
+    // Pagina 1: primi 10
+    let res1 = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .add_query_params(json!({ "limit": 10 }))
+        .await;
+
+    res1.assert_status(StatusCode::OK);
+    let body1: Value = res1.json();
+    let items1 = body1["items"].as_array().unwrap();
+    let next_cursor = body1["next_cursor"]
+        .as_str()
+        .expect("Manca il cursore per la pag 2");
+
+    assert_eq!(items1.len(), 10);
+
+    // Pagina 2: altri 10 usando il cursore
+    let res2 = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .add_query_params(json!({ "limit": 10, "cursor": next_cursor }))
+        .await;
+
+    let body2: Value = res2.json();
+    let items2 = body2["items"].as_array().unwrap();
+    let next_cursor_2 = body2["next_cursor"]
+        .as_str()
+        .expect("Manca il cursore per la pag 3");
+
+    assert_eq!(items2.len(), 10);
+    // Verifichiamo che non ci siano duplicati tra le pagine
+    assert_ne!(items1[0]["content_id"], items2[0]["content_id"]);
+
+    // Pagina 3: ultimi 5
+    let res3 = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .add_query_params(json!({ "limit": 10, "cursor": next_cursor_2 }))
+        .await;
+
+    let body3: Value = res3.json();
+    assert_eq!(body3["items"].as_array().unwrap().len(), 5);
+    assert!(
+        body3["next_cursor"].is_null(),
+        "L'ultima pagina non deve avere un cursore"
+    );
+
+    // --- CASE B: Filtraggio per content_type ---
+    let res_filter = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .add_query_params(json!({ "content_type": "bonus_hunter", "limit": 50 }))
+        .await;
+
+    let items_filtered = res_filter.json::<Value>()["items"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(
+        items_filtered, 10,
+        "Dovrebbero esserci solo 10 bonus_hunter"
+    );
+
+    // --- CASE C: Validazione Parametri (Strict) ---
+    // 1. Limit mancante (se lo abbiamo reso obbligatorio, deve dare 400)
+    let res_no_limit = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .await;
+    res_no_limit.assert_status(StatusCode::OK);
+
+    // 2. Cursore malformato (Base64 invalido o JSON rotto)
+    let res_bad_cursor = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", test_user_id))
+        .add_query_params(json!({ "limit": 10, "cursor": "not-base64-content" }))
+        .await;
+    // Qui dipende da come gestisci l'errore nel service, tipicamente 400
+    res_bad_cursor.assert_status(StatusCode::BAD_REQUEST);
+
+    // --- CASE D: Isolamento Utenti ---
+    let other_user = uuid::Uuid::new_v4().to_string();
+    auth_ok(&other_user, &mock_server).await;
+
+    let res_empty = server
+        .get("/v1/likes/user")
+        .add_header("Authorization", format!("Bearer {}", other_user))
+        .add_query_params(json!({ "limit": 10 }))
+        .await;
+
+    assert_eq!(
+        res_empty.json::<Value>()["items"].as_array().unwrap().len(),
+        0
+    );
+}

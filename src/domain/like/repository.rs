@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::api::dto::{BatchRequest, ContentCount, ContentItem};
+use crate::api::dto::{BatchRequest, ContentCount, ContentItem, PaginationCursor};
 use crate::domain::errors::DomainError;
 use crate::domain::like::{ContentId, ContentType, Like};
 use crate::domain::user::UserId;
@@ -40,9 +40,10 @@ pub trait LikeDbRepository: Send + Sync {
 
     async fn get_user_likes(
         &self,
-        user_id: &UserId,
-        cursor: Option<DateTime<Utc>>,
-        limit: u64,
+        user_id: UserId,
+        content_type: Option<String>,
+        cursor: Option<PaginationCursor>,
+        limit: usize,
     ) -> Result<Vec<Like>, DomainError>;
 
     async fn get_counts_batch(

@@ -6,7 +6,8 @@ pub mod infrastructure;
 use crate::{
     api::{
         handlers::{
-            delete_unlike, get_count, get_count_batch, get_status, get_status_batch, post_like,
+            delete_unlike, get_count, get_count_batch, get_status, get_status_batch,
+            get_user_likes, post_like,
         },
         middleware::{auth_middleware, tracing_middleware},
     },
@@ -33,6 +34,7 @@ pub fn create_app(
         .route("/likes", post(post_like))
         .route("/likes/{content_type}/{content_id}", delete(delete_unlike))
         .route("/likes/{content_type}/{content_id}/status", get(get_status))
+        .route("/likes/user", get(get_user_likes))
         .route("/likes/batch/statuses", post(get_status_batch))
         .layer(from_fn_with_state(
             extern_validator.clone(),

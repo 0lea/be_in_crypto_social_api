@@ -1,6 +1,6 @@
 use crate::{
     api::{
-        dto::{BatchRequest, LikeRequest, LikeResponse},
+        dto::{BatchRequest, LikeRequest, LikeResponse, UserLikesQuery, UserLikesResponse},
         errors::ApiError,
     },
     application::{commands::AddLikeCommand, like_service::LikeService},
@@ -12,7 +12,7 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -87,4 +87,19 @@ pub async fn get_status_batch(
 ) -> Result<impl IntoResponse, ApiError> {
     let res = service.get_batch_status(&user_id, payload.items).await?;
     Ok((StatusCode::OK, Json(res)))
+}
+
+#[tracing::instrument(skip(service))]
+pub async fn get_user_likes(
+    State(service): State<Arc<LikeService>>,
+    Extension(user_id): Extension<UserId>,
+    Query(query): Query<UserLikesQuery>,
+) -> Result<Json<UserLikesResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(20);
+
+    let response = service
+        .get_user_liked_items(user_id, query.content_type, query.cursor, limit)
+        .await?;
+
+    Ok(Json(response))
 }

@@ -47,6 +47,7 @@ impl ContentType {
 
 #[derive(Debug, Clone, Default)]
 pub struct Like {
+    pub id: Uuid,
     pub user_id: UserId,
     pub content_type: ContentType,
     pub content_id: ContentId,
