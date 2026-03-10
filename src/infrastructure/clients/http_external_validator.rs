@@ -10,7 +10,6 @@ use crate::{
 };
 use async_trait::async_trait;
 use reqwest::StatusCode;
-use tracing::info;
 use uuid::Uuid;
 
 const PROFILE_API: &str = "Profile API";
@@ -24,20 +23,29 @@ pub struct HttpExternalValidator {
 }
 
 impl HttpExternalValidator {
-    pub fn new() -> Self {
-        let profile_url = std::env::var("PROFILE_API_URL").expect("missing PROFILE_API_URL env");
-        let content_url =
-            std::env::var("CONTENT_API_URL").expect("missing CONTENT_API_POST_URL env");
-
+    pub fn new(profile_url: String, content_url: String) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(2)) // Timeout stretto! Fondamentale per la resilienza
+                .timeout(std::time::Duration::from_secs(2))
                 .build()
-                .unwrap(),
+                .expect("Failed to create reqwest client"),
             profile_service_url: profile_url,
             content_service_url: content_url,
             breaker: CircuitBreaker::from_env(),
         }
+    }
+
+    pub fn from_env() -> Self {
+        let profile_url = std::env::var("PROFILE_API_URL").expect("missing PROFILE_API_URL env");
+        let content_url = std::env::var("CONTENT_API_URL").expect("missing CONTENT_API_URL env");
+
+        Self::new(profile_url, content_url)
+    }
+}
+
+impl Default for HttpExternalValidator {
+    fn default() -> Self {
+        Self::from_env()
     }
 }
 
