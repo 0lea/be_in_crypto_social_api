@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    extract::{State, rejection::JsonRejection},
+    extract::{Path, State, rejection::JsonRejection},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -35,4 +35,35 @@ pub async fn post_like(
     let res: LikeResponse = service.add_like(command).await?.into();
 
     Ok((StatusCode::CREATED, Json(res)))
+}
+
+#[tracing::instrument(skip(service))]
+pub async fn delete_unlike(
+    Extension(user_id): Extension<UserId>,
+    State(service): State<Arc<LikeService>>,
+    Path((c_type, c_id)): Path<(ContentType, ContentId)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let res = service.remove_like(&user_id, &c_type, &c_id).await?;
+    Ok((StatusCode::OK, Json(res)))
+}
+
+#[tracing::instrument(skip(service))]
+pub async fn get_count(
+    State(service): State<Arc<LikeService>>,
+    Path((c_type, c_id)): Path<(ContentType, ContentId)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let res = service.get_like_count(&c_type, &c_id).await?;
+    Ok((StatusCode::OK, Json(res)))
+}
+
+#[tracing::instrument(skip(service))]
+pub async fn get_status(
+    Extension(user_id): Extension<UserId>,
+    State(service): State<Arc<LikeService>>,
+    Path((c_type, c_id)): Path<(ContentType, ContentId)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let res = service.get_like_status(&user_id, &c_type, &c_id).await?;
+    Ok((StatusCode::OK, Json(res)))
+}
+}
 }
