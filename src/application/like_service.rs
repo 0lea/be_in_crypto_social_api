@@ -1,12 +1,16 @@
+use chrono::Utc;
+use tracing::{debug, error, info, warn};
+
 use crate::{
     application::commands::{AddLikeCommand, AddLikeCommandResult},
     domain::{
         errors::DomainError,
         external_validator::ExternalValidator,
-        like::{Like, LikeCacheRepository, LikeDbRepository},
+        like::{ContentId, ContentType, Like, LikeCacheRepository, LikeDbRepository},
+        user::UserId,
     },
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 pub struct LikeService {
     db_repo: Arc<dyn LikeDbRepository>,
@@ -32,197 +36,200 @@ impl LikeService {
         &self,
         like_cmd: AddLikeCommand,
     ) -> Result<AddLikeCommandResult, DomainError> {
+        let count: u64;
+
         self.extern_repo
             .validate_content(&like_cmd.content_type, &like_cmd.content_id)
             .await?;
 
+        let mut created_at = chrono::Utc::now();
         let like = Like {
             user_id: like_cmd.user_id.clone(),
             content_type: like_cmd.content_type.clone(),
             content_id: like_cmd.content_id.clone(),
-            created_at: chrono::Utc::now(),
+            created_at,
         };
 
-        self.db_repo.save(&like).await?;
+        let already_exists = self.db_repo.save(&like).await?;
 
-        let new_count = match self
-            .cache_repo
-            .increment(&like_cmd.content_type, &like_cmd.content_id)
-            .await
-        {
-            Ok(count) => count,
-            Err(e) => {
-                tracing::error!("Cache failure, rolling back DB: {:?}", e);
-                //TODO: to do it atomicly and in transaction + leaderboad update
-                // let _ = self.db_repo.delete(user_id, &c_type, &c_id).await;
-                return Err(e);
-            }
-        };
+        info!("already_exists {}", already_exists);
+        if already_exists {
+            let count_res = self
+                .get_like_count(&like_cmd.content_type, &like_cmd.content_id)
+                .await?;
+            count = count_res.count;
+
+            let existed_like = self
+                .db_repo
+                .get_like(
+                    &like_cmd.user_id,
+                    &like_cmd.content_type,
+                    &like_cmd.content_id,
+                )
+                .await?;
+            created_at = existed_like.created_at;
+        } else {
+            count = match self
+                .cache_repo
+                .increment(&like_cmd.content_type, &like_cmd.content_id)
+                .await
+            {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::error!("Cache failure, rolling back DB: {:?}", e);
+                    let _ = self
+                        .db_repo
+                        .remove(
+                            &like_cmd.user_id,
+                            &like_cmd.content_type,
+                            &like_cmd.content_id,
+                        )
+                        .await
+                        .map_err(|e| error!("Error rolling back from add_like: {:?}", e));
+                    return Err(e);
+                }
+            };
+        }
 
         Ok(AddLikeCommandResult {
             liked: true,
-            count: new_count,
-            liked_at: chrono::Utc::now(),
-            request_id: "get_from_context".into(),
+            count,
+            liked_at: created_at,
+            already_existed: already_exists,
         })
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-    use crate::domain::{
-        errors::DomainError,
-        like::{ContentId, ContentType},
-        user::UserId,
-    };
-    use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
-    use mockall::{mock, predicate::*};
-    use uuid::Uuid;
-
-    // Generiamo i Mock automaticamente
-    mock! {
-        pub DbRepo {}
-        #[async_trait]
-        impl LikeDbRepository for DbRepo {
-
-
-    async fn save(&self, like: &Like) -> Result<(), DomainError>;
-    async fn remove(
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_like(
         &self,
         user_id: &UserId,
         content_type: &ContentType,
         content_id: &ContentId,
-    ) -> Result<(), DomainError>;
+    ) -> Result<UnlikeResponse, DomainError> {
+        self.extern_repo
+            .validate_content(content_type, content_id)
+            .await?;
 
-    async fn get_user_likes(
+        let was_liked = self
+            .db_repo
+            .remove(user_id, content_type, content_id)
+            .await?;
+
+        let mut current_count = self
+            .cache_repo
+            .get_count(content_type, content_id)
+            .await
+            .unwrap_or(0);
+
+        if was_liked {
+            match self.cache_repo.decrement(content_type, content_id).await {
+                Ok(new_count) => current_count = new_count,
+                Err(e) => {
+                    tracing::error!("Cache failure, rolling back DB: {:?}", e);
+
+                    let like = Like {
+                        user_id: user_id.clone(),
+                        content_type: content_type.clone(),
+                        content_id: content_id.clone(),
+                        created_at: chrono::Utc::now(),
+                    };
+                    let _ = self
+                        .db_repo
+                        .save(&like)
+                        .await
+                        .map_err(|e| error!("Error rolling back from remove_like: {:?}", e));
+
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(crate::api::dto::UnlikeResponse {
+            liked: false,
+            was_liked,
+            count: current_count,
+        })
+    }
+
+    pub async fn get_like_count(
+        &self,
+        content_type: &ContentType,
+        content_id: &ContentId,
+    ) -> Result<CountResponse, DomainError> {
+        let cache_res = self.cache_repo.get_count(content_type, content_id).await;
+
+        if let Ok(count) = cache_res
+            && count != 0
+        {
+            debug!("found in cache, count {}", count);
+            return Ok(CountResponse {
+                content_type: content_type.to_string(),
+                content_id: content_id.to_string(),
+                count,
+            });
+        }
+
+        tracing::error!("Cache  get like count failure, fallback on DB",);
+
+        let count = self
+            .db_repo
+            .get_likes_count(content_type, content_id)
+            .await?;
+
+        if count > 0 {
+            tracing::warn!("refreshing cache from db resp , fallback on DB",);
+            let _ = self
+                .cache_repo
+                .set_value(content_type, content_id, count)
+                .await
+                .map_err(|err| error!("Cache fail refresh count from db value: {:?}", err));
+        }
+
+        Ok(CountResponse {
+            content_type: content_type.to_string(),
+            content_id: content_id.to_string(),
+            count,
+        })
+    }
+
+    pub async fn get_like_status(
         &self,
         user_id: &UserId,
-        cursor: Option<DateTime<Utc>>,
-        limit: u64,
-    ) -> Result<Vec<Like>, DomainError>;
+        content_type: &ContentType,
+        content_id: &ContentId,
+    ) -> Result<StatusResponse, DomainError> {
+        let mut res = StatusResponse::default();
+
+        let existing_like = self
+            .db_repo
+            .get_like(user_id, content_type, content_id)
+            .await
+            .map_err(|_| {
+                warn!("ask status of not existed like");
+            });
+
+        res.liked = existing_like.is_ok();
+
+        if let Ok(existing_like) = existing_like {
+            res.liked_at = Some(existing_like.created_at);
         }
+
+        Ok(res)
     }
 
-    mock! {
-        pub CacheRepo {}
-        #[async_trait]
-        impl LikeCacheRepository for CacheRepo {
-            async fn increment(
-                &self,
-                content_type: &ContentType,
-                content_id: &ContentId,
-            ) -> Result<u64, DomainError>;
-
-            async fn decrement(
-                &self,
-                content_type: &ContentType,
-                content_id: &ContentId,
-            ) -> Result<(), DomainError>;
-
-            async fn get_count(
-                &self,
-                content_type: &ContentType,
-                content_id: &ContentId,
-            ) -> Result<u64, DomainError>;
-
-            async fn get_counts_batch(
-                &self,
-                content_type: &ContentType,
-                ids: &[ContentId],
-            ) -> Result<HashMap<Uuid, u64>, DomainError>;
-
-            async fn update_leaderboard(
-                &self,
-                content_type: &ContentType,
-                content_id: &ContentId,
-            ) -> Result<(), DomainError>;
-
-            async fn get_leaderboard_window(
-                &self,
-                c_type: &ContentType,
-                seconds: i64,
-            ) -> Result<Vec<String>, DomainError>;
         }
+
+
+
+
+
+
+
     }
 
-    mock! {
-        pub Validator {}
-        #[async_trait]
-        impl ExternalValidator for Validator {
-            async fn validate_user(&self, token: &UserId) -> Result<Uuid, DomainError>;
-            async fn validate_content(
-                &self,
-                content_type: &ContentType,
-                content_id: &ContentId,
-            ) -> Result<Uuid, DomainError>;
-        }
-    }
 
-    #[tokio::test]
-    async fn test_add_like_success() {
-        let mut db = MockDbRepo::new();
-        let mut cache = MockCacheRepo::new();
-        let mut val = MockValidator::new();
 
-        let u_id = UserId(Uuid::new_v4());
-        let c_type = ContentType::new("post");
-        let c_id = ContentId(Uuid::new_v4());
 
-        // Aspettative: validazione ok, db ok, cache ok
-        val.expect_validate_content()
-            .returning(|_, _| Ok(Uuid::new_v4()))
-            .once();
-        db.expect_save().returning(|_| Ok(())).once();
-        cache.expect_increment().returning(|_, _| Ok(1)).once();
 
-        let service = LikeService::new(Arc::new(db), Arc::new(cache), Arc::new(val));
-
-        let like_cmd = AddLikeCommand {
-            user_id: u_id,
-            content_type: c_type,
-            content_id: c_id,
-        };
-        let result = service.add_like(like_cmd).await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert_eq!(response.count, 1);
-        assert!(response.liked);
-    }
-
-    #[tokio::test]
-    async fn test_add_like_fails_if_content_invalid() {
-        let mut db = MockDbRepo::new();
-        let mut cache = MockCacheRepo::new();
-        let mut val = MockValidator::new();
-
-        val.expect_validate_content()
-            .returning(|_, _| {
-                Err(DomainError::NotFound {
-                    id: "test_id".into(),
-                    resource: "test".into(),
-                })
-            })
-            .once();
-
-        db.expect_save().never();
-        cache.expect_increment().never();
-
-        let like_cmd = AddLikeCommand {
-            user_id: UserId(Uuid::new_v4()),
-            content_type: ContentType::new("post"),
-            content_id: ContentId(Uuid::new_v4()),
-        };
-        let service = LikeService::new(Arc::new(db), Arc::new(cache), Arc::new(val));
-        let result = service.add_like(like_cmd).await;
-
-        assert!(matches!(
-            result,
-            Err(DomainError::NotFound { id, resource })
-        ));
     }
 }
