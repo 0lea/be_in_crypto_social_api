@@ -7,8 +7,6 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-const SSE_EVENTS_CACHE_KEY: &str = "sse:events:*";
-
 pub struct SseManager {
     channels: DashMap<String, broadcast::Sender<SseLikeEvent>>,
     cache_repo: Arc<dyn LikeCacheRepository>,
@@ -47,16 +45,21 @@ impl SseManager {
                     tracing::info!("📡 SseManager: In ascolto sugli eventi...");
 
                     while let Some(payload) = stream.next().await {
-                        if let Ok(event) = serde_json::from_str::<SseLikeEvent>(&payload) {
-                            if let Some(c_type) = &event.content_type
-                                && let Some(c_id) = &event.content_id
-                            {
-                                let local_key = Self::get_key(&c_type, &c_id);
-                                if let Some(tx) = self.channels.get(&local_key) {
-                                    let _ = tx.send(event);
-                                }
-                            }
-                        }
+                        let Ok(event) = serde_json::from_str::<SseLikeEvent>(&payload) else {
+                            continue;
+                        };
+
+                        let (Some(c_type), Some(c_id)) = (&event.content_type, &event.content_id)
+                        else {
+                            continue;
+                        };
+
+                        let local_key = Self::get_key(c_type, c_id);
+                        let Some(tx) = self.channels.get(&local_key) else {
+                            continue;
+                        };
+
+                        let _ = tx.send(event);
                     }
                 }
                 Err(e) => {
