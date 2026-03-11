@@ -3,7 +3,7 @@ use axum_test::TestServer;
 use redis::Commands;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::{collections::HashMap, ops::Add, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 use wiremock::{
@@ -41,7 +41,7 @@ async fn auth_ok(user_id: &str, mock_server: &MockServer) {
 async fn auth_err(user_id: &str, mock_server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/v1/auth/validate"))
-        .and(header("Authorization", "Bearer tok_bad"))
+        .and(header("Authorization", format!("Bearer {}", user_id)))
         .respond_with(ResponseTemplate::new(401))
         .mount(&mock_server)
         .await;
