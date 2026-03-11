@@ -3,6 +3,7 @@ use crate::{
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, LikeCacheRepository},
+        rate_limit::{RateLimitStatus, RateLimiter},
     },
 };
 use futures_util::StreamExt;
@@ -296,5 +297,51 @@ impl LikeCacheRepository for RedisLikeRepository {
             .map(|msg| msg.get_payload::<String>().unwrap_or_default());
 
         Ok(stream.boxed())
+    }
+}
+
+#[async_trait]
+impl RateLimiter for RedisLikeRepository {
+    async fn check_limit(
+        &self,
+        key: &str,
+        limit: u64,
+        window_secs: u64,
+    ) -> Result<RateLimitStatus, DomainError> {
+        let mut conn = self.get_conn().await?;
+
+        let script = redis::Script::new(include_str!("./rate_limit.lua"));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // ARGV[1]: capacity -> limit
+        // ARGV[2]: fill_rate -> tokens per second (limit / window)
+        // ARGV[3]: now
+        // ARGV[4]: cost -> 1
+        let fill_rate = limit as f64 / window_secs as f64;
+
+        let result: Vec<i64> = script
+            .key(key)
+            .arg(limit) // ARGV[1]
+            .arg(fill_rate) // ARGV[2]
+            .arg(now) // ARGV[3]
+            .arg(1) // ARGV[4] (costo singola chiamata)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        // result[0] -> remaining_tokens
+        // result[1] -> seconds_until_full (reset_after)
+        // result[2] -> allowed (1 or 0)
+
+        Ok(RateLimitStatus {
+            allowed: result[2] == 1,
+            remaining: result[0] as u64,
+            limit,
+            reset_after: result[1] as u64,
+        })
     }
 }
