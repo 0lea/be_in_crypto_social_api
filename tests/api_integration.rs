@@ -36,7 +36,7 @@ async fn auth_ok(user_id: &str, mock_server: &MockServer) {
         "user_id": user_id,
         "display_name": "test_user"
         })))
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
 }
 
@@ -801,6 +801,8 @@ async fn test_sse_heartbeat(pool: PgPool) {
     );
 
     let mut es = EventSource::get(stream_url);
+    let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Aspettiamo il primo evento (l'heartbeat)
     // Dato che il tuo codice fa il tick ogni 15 secondi, per non far durare il test 15s
@@ -822,120 +824,6 @@ async fn test_sse_heartbeat(pool: PgPool) {
 
 #[sqlx::test]
 #[test_log::test]
-async fn test_sse_like_broadcast(pool: PgPool) {
-    let mock_server = MockServer::start().await;
-    // Qui devi assicurarti che il mock_server risponda 200 OK per il content_id che andremo a testare
-    // (Aggiungi la configurazione wiremock appropriata per il tuo ExternalValidator)
-
-    let base_url = spawn_test_server(pool, mock_server.uri()).await;
-    let content_id = Uuid::new_v4(); // Usa un UUID che il mock_server accetta
-    let user_id = Uuid::new_v4();
-
-    let stream_url = format!(
-        "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id
-    );
-    let mut es = EventSource::get(stream_url);
-
-    // Aspetta che la connessione SSE sia stabilita
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Fai una richiesta POST /likes per triggerare l'evento
-    let client = reqwest::Client::new();
-    let res = client
-        .post(format!("{}/v1/likes", base_url))
-        // Se hai un mock del profile validator, usa un token valido per lui.
-        // Simuliamo l'header se la tua app di test salta l'auth, o metti un token valido
-        .header("Authorization", "Bearer valid_token_here")
-        .json(&serde_json::json!({
-            "content_type": "post",
-            "content_id": content_id.to_string()
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::CREATED);
-
-    // Cattura l'evento SSE
-    let mut found_like = false;
-    for _ in 0..2 {
-        // Cicliamo per scartare eventuali heartbeat
-        let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
-        if let Ok(Some(Ok(Event::Message(msg)))) = event {
-            let payload: Value = serde_json::from_str(&msg.data).unwrap();
-            if payload["event"] == "Like" {
-                assert_eq!(
-                    payload["content_id"].as_str().unwrap(),
-                    content_id.to_string()
-                );
-                assert_eq!(payload["count"].as_u64().unwrap(), 1);
-                found_like = true;
-                break;
-            }
-        }
-    }
-    assert!(found_like, "Did not receive 'Like' SSE event");
-}
-
-#[sqlx::test]
-#[test_log::test]
-async fn test_sse_unlike_broadcast(pool: PgPool) {
-    let mock_server = MockServer::start().await;
-    let base_url = spawn_test_server(pool.clone(), mock_server.uri()).await;
-    let content_id = Uuid::new_v4();
-    let user_id = Uuid::new_v4();
-
-    // Inseriamo il like prima
-    insert_old_like(
-        &pool,
-        user_id.into(),
-        content_id.into(),
-        "post".to_string().into(),
-        0, // Delta tempo (0 = adesso)
-    )
-    .await;
-
-    // Sincronizziamo la cache chiamando un get_count o gestendo la pre-popolazione (se necessario)
-    // ...
-
-    let stream_url = format!(
-        "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id
-    );
-    let mut es = EventSource::get(stream_url);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Eseguiamo l'unlike
-    let client = reqwest::Client::new();
-    let res = client
-        .delete(format!("{}/v1/likes/post/{}", base_url, content_id))
-        .header("Authorization", "Bearer valid_token_here")
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::OK);
-
-    // Verifichiamo l'evento
-    let mut found_unlike = false;
-    let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
-    if let Ok(Some(Ok(Event::Message(msg)))) = event {
-        let payload: Value = serde_json::from_str(&msg.data).unwrap();
-        if payload["event"] == "Unlike" {
-            assert_eq!(
-                payload["content_id"].as_str().unwrap(),
-                content_id.to_string()
-            );
-            found_unlike = true;
-        }
-    }
-    assert!(found_unlike, "Did not receive 'Unlike' SSE event");
-}
-
-#[sqlx::test]
-#[test_log::test]
 async fn test_sse_channel_isolation(pool: PgPool) {
     let mock_server = MockServer::start().await;
     let base_url = spawn_test_server(pool, mock_server.uri()).await;
@@ -943,15 +831,20 @@ async fn test_sse_channel_isolation(pool: PgPool) {
     let content_id_1 = Uuid::new_v4();
     let content_id_2 = Uuid::new_v4();
 
+    let user_id = Uuid::new_v4().to_string();
+
     // Mi collego allo stream 1
     let stream_url_1 = format!(
         "{}/v1/likes/stream?content_type=post&content_id={}",
         base_url, content_id_1
     );
     let mut es1 = EventSource::get(stream_url_1);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _ = tokio::time::timeout(Duration::from_millis(50), es1.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Faccio un Like sul contenuto 2
+    auth_ok(&user_id, &mock_server).await;
+    post_ok(&content_id_2.to_string(), &mock_server).await;
     let client = reqwest::Client::new();
     client
         .post(format!("{}/v1/likes", base_url))
@@ -979,5 +872,218 @@ async fn test_sse_channel_isolation(pool: PgPool) {
         _ => {
             // Un timeout è il comportamento corretto qui, significa isolamento funzionante
         }
+    }
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_like_broadcast(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool, mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+
+    // SETUP DEI MOCK (Mancava questo!)
+    auth_ok(&user_id.to_string(), &mock_server).await;
+    post_ok(&content_id.to_string(), &mock_server).await;
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+    let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Fai una richiesta POST /likes per triggerare l'evento
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("{}/v1/likes", base_url))
+        .header("Authorization", format!("Bearer {}", user_id))
+        .json(&serde_json::json!({
+            "content_type": "post",
+            "content_id": content_id.to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // Cattura l'evento SSE
+    let mut found_like = false;
+    for _ in 0..2 {
+        let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
+        if let Ok(Some(Ok(Event::Message(msg)))) = event {
+            let payload: Value = serde_json::from_str(&msg.data).unwrap();
+            if payload["event"] == "Like" {
+                assert_eq!(
+                    payload["content_id"].as_str().unwrap(),
+                    content_id.to_string()
+                );
+                assert_eq!(payload["count"].as_u64().unwrap(), 1);
+                found_like = true;
+                break;
+            }
+        }
+    }
+    assert!(found_like, "Did not receive 'Like' SSE event");
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_unlike_broadcast(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool.clone(), mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+    let user_id_str = Uuid::new_v4().to_string();
+    let user_uuid = Uuid::parse_str(&user_id_str).unwrap();
+
+    // Usiamo lo STESSO utente che farà la richiesta HTTP!
+    insert_old_like(
+        &pool,
+        user_uuid.into(), // <--- Modificato qui
+        content_id.into(),
+        "post".to_string().into(),
+        0,
+    )
+    .await;
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+    let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    auth_ok(&user_id_str, &mock_server).await;
+    post_ok(&content_id.to_string(), &mock_server).await;
+
+    let client = reqwest::Client::new();
+    let res = client
+        .delete(format!("{}/v1/likes/post/{}", base_url, content_id))
+        .header("Authorization", format!("Bearer {}", user_id_str))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Verifichiamo l'evento
+    let mut found_unlike = false;
+    for _ in 0..2 {
+        // Cicliamo per evitare di fallire al primo heartbeat
+        let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
+        if let Ok(Some(Ok(Event::Message(msg)))) = event {
+            let payload: Value = serde_json::from_str(&msg.data).unwrap();
+            if payload["event"] == "Unlike" {
+                assert_eq!(
+                    payload["content_id"].as_str().unwrap(),
+                    content_id.to_string()
+                );
+                found_unlike = true;
+                break;
+            }
+        }
+    }
+    assert!(found_unlike, "Did not receive 'Unlike' SSE event");
+}
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_no_event_on_duplicate_like(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool.clone(), mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+    let user_id_str = Uuid::new_v4().to_string();
+    let user_uuid = Uuid::parse_str(&user_id_str).unwrap();
+
+    // Inseriamo GIÀ il like nel database
+    insert_old_like(
+        &pool,
+        user_uuid.into(),
+        content_id.into(),
+        "post".to_string().into(),
+        0,
+    )
+    .await;
+
+    auth_ok(&user_id_str, &mock_server).await;
+    post_ok(&content_id.to_string(), &mock_server).await;
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+    let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // MANDIAMO IL SECONDO LIKE (Idempotenza)
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("{}/v1/likes", base_url))
+        .header("Authorization", format!("Bearer {}", user_id_str))
+        .json(&serde_json::json!({
+            "content_type": "post",
+            "content_id": content_id.to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::CREATED); // Idempotente
+
+    // Ci aspettiamo di NON ricevere l'evento "Like", andrà in timeout
+    let event = tokio::time::timeout(Duration::from_millis(500), es.next()).await;
+    if let Ok(Some(Ok(Event::Message(msg)))) = event {
+        let payload: Value = serde_json::from_str(&msg.data).unwrap();
+        assert_ne!(
+            payload["event"], "Like",
+            "Un duplicate like non dovrebbe lanciare l'evento"
+        );
+    }
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_no_event_on_unlike_not_liked(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool.clone(), mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+    let user_id_str = Uuid::new_v4().to_string();
+
+    // NON inseriamo il like a DB.
+
+    auth_ok(&user_id_str, &mock_server).await;
+    post_ok(&content_id.to_string(), &mock_server).await;
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+    let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Mandiamo un UNLIKE su una cosa a cui non abbiamo messo like
+    let client = reqwest::Client::new();
+    let res = client
+        .delete(format!("{}/v1/likes/post/{}", base_url, content_id))
+        .header("Authorization", format!("Bearer {}", user_id_str))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK); // Idempotente
+
+    // Ci aspettiamo di NON ricevere l'evento "Unlike"
+    let event = tokio::time::timeout(Duration::from_millis(500), es.next()).await;
+    if let Ok(Some(Ok(Event::Message(msg)))) = event {
+        let payload: Value = serde_json::from_str(&msg.data).unwrap();
+        assert_ne!(
+            payload["event"], "Unlike",
+            "Un unlike a vuoto non dovrebbe lanciare l'evento"
+        );
     }
 }
