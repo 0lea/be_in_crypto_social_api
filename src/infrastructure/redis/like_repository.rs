@@ -73,24 +73,9 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut conn = self.get_conn().await?;
 
         let count_key = self.format_count_key(c_type, c_id);
-        let lb_key = format!("leaderboard:{}", c_type.as_str());
-        let score = chrono::Utc::now().timestamp();
-        let member = c_id.0.to_string();
 
-        let script = redis::Script::new(
-            r#"
-            local new_count = redis.call('INCR', KEYS[1])
-            redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
-            return new_count
-        "#,
-        );
-
-        let count: u64 = script
-            .key(count_key)
-            .key(lb_key)
-            .arg(score)
-            .arg(member)
-            .invoke_async(&mut conn)
+        let count: u64 = conn
+            .incr(count_key, 1)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -101,24 +86,8 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut conn = self.get_conn().await?;
 
         let count_key = self.format_count_key(c_type, c_id);
-        let lb_key = format!("leaderboard:{}", c_type.as_str());
-        let score = chrono::Utc::now().timestamp();
-        let member = c_id.0.to_string();
-
-        let script = redis::Script::new(
-            r#"
-            local new_count = redis.call('DECR', KEYS[1])
-            redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
-            return new_count
-            "#,
-        );
-
-        let count: i64 = script
-            .key(count_key)
-            .key(lb_key)
-            .arg(score)
-            .arg(member)
-            .invoke_async(&mut conn)
+        let count: i64 = conn
+            .decr(count_key, 1)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -132,28 +101,9 @@ impl LikeCacheRepository for RedisLikeRepository {
         value: u64,
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
-
         let count_key = self.format_count_key(c_type, c_id);
-        let lb_key = format!("leaderboard:{}", c_type.as_str());
-        let score = chrono::Utc::now().timestamp();
-        let member = c_id.0.to_string();
-
-        // Usiamo SET per la chiave singola e ZADD per la leaderboard
-        let script = redis::Script::new(
-            r#"
-                redis.call('SET', KEYS[1], ARGV[1])
-                redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
-                return redis.status_reply("OK")
-            "#,
-        );
-
-        let _: i64 = script
-            .key(count_key)
-            .key(lb_key)
-            .arg(value)
-            .arg(score)
-            .arg(member)
-            .invoke_async(&mut conn)
+        let _: i64 = conn
+            .set(count_key, value)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -316,7 +266,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let channel = format!("sse:events:{}:{}", c_type.as_str(), c_id.0);
+        let channel = self.format_channel_key(c_type, c_id);
 
         let payload = serde_json::to_string(event)
             .map_err(|e| DomainError::CacheError(format!("JSON error: {}", e)))?;
