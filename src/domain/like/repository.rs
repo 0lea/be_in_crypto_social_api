@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::api::dto::{ContentCount, ContentItem, PaginationCursor, TopLikeItem};
+use crate::api::dto::{ContentCount, ContentItem, PaginationCursor, SseLikeEvent, TopLikeItem};
 use crate::domain::errors::DomainError;
 use crate::domain::like::{ContentId, ContentType, Like};
 use crate::domain::user::UserId;
@@ -85,12 +85,12 @@ pub trait LikeCacheRepository: Send + Sync {
         &self,
         content_type: &ContentType,
         content_id: &ContentId,
-    ) -> Result<u64, DomainError>;
+    ) -> Result<Option<u64>, DomainError>;
 
     async fn get_counts_batch<'a>(
         &'a self,
         items: &'a [ContentItem],
-    ) -> Result<HashMap<ContentId, (&'a str, u64)>, DomainError>;
+    ) -> Result<HashMap<ContentId, u64>, DomainError>;
 
     async fn set_counts_batch(&self, counts: Vec<ContentCount>) -> Result<(), DomainError>;
 
@@ -116,12 +116,7 @@ pub trait LikeCacheRepository: Send + Sync {
 
     async fn get_async_pubsub_stream(&self) -> Result<BoxStream<'static, String>, DomainError>;
 
-    async fn publish_like_event(
-        &self,
-        c_type: &ContentType,
-        c_id: &ContentId,
-        event: &crate::api::dto::SseLikeEvent,
-    ) -> Result<(), DomainError>;
+    async fn publish_like_event(&self, event: &SseLikeEvent) -> Result<(), DomainError>;
 
     async fn health_check(&self) -> Result<(), DomainError>;
 }

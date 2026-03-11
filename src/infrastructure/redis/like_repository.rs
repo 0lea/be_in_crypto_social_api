@@ -102,7 +102,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
         let count_key = self.format_count_key(c_type, c_id);
-        let _: i64 = conn
+        let _: () = conn
             .set(count_key, value)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
@@ -110,21 +110,23 @@ impl LikeCacheRepository for RedisLikeRepository {
         Ok(())
     }
 
-    async fn get_count(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
+    async fn get_count(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+    ) -> Result<Option<u64>, DomainError> {
         let mut conn = self.get_conn().await?;
+        let key = self.format_count_key(c_type, c_id);
 
-        let res: Result<u64, DomainError> = conn
-            .get(self.format_count_key(c_type, c_id))
+        conn.get(key)
             .await
-            .map_err(|e| DomainError::CacheError(e.to_string()));
-
-        res
+            .map_err(|e| DomainError::CacheError(e.to_string()))
     }
 
     async fn get_counts_batch<'a>(
         &'a self,
         items: &'a [ContentItem],
-    ) -> Result<HashMap<ContentId, (&'a str, u64)>, DomainError> {
+    ) -> Result<HashMap<ContentId, u64>, DomainError> {
         if items.is_empty() {
             return Ok(HashMap::new());
         }
@@ -143,11 +145,8 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut result = HashMap::with_capacity(items.len());
 
         for (item, opt_count) in items.iter().zip(values.into_iter()) {
-            match opt_count {
-                Some(count) => {
-                    result.insert(item.content_id, (item.content_type.as_str(), count));
-                }
-                None => return Err(DomainError::CacheMiss),
+            if let Some(count) = opt_count {
+                result.insert(item.content_id, count);
             }
         }
 
@@ -258,15 +257,13 @@ impl LikeCacheRepository for RedisLikeRepository {
 
     // SSE
 
-    async fn publish_like_event(
-        &self,
-        c_type: &ContentType,
-        c_id: &ContentId,
-        event: &SseLikeEvent,
-    ) -> Result<(), DomainError> {
+    async fn publish_like_event(&self, event: &SseLikeEvent) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
 
-        let channel = self.format_channel_key(c_type, c_id);
+        let c_type = event.content_type.clone().ok_or(DomainError::SseKeyError)?;
+        let c_id = event.content_id.ok_or(DomainError::SseKeyError)?;
+
+        let channel = self.format_channel_key(&c_type, &c_id);
 
         let payload = serde_json::to_string(event)
             .map_err(|e| DomainError::CacheError(format!("JSON error: {}", e)))?;

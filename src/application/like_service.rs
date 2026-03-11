@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     api::dto::{
@@ -48,8 +48,8 @@ impl LikeService {
         &self,
         like_cmd: AddLikeCommand,
     ) -> Result<AddLikeCommandResult, DomainError> {
-        let count: u64;
-
+        let mut count: u64;
+        // validate content
         self.extern_repo
             .validate_content(&like_cmd.content_type, &like_cmd.content_id)
             .await?;
@@ -58,21 +58,26 @@ impl LikeService {
         let like = Like {
             user_id: like_cmd.user_id.clone(),
             content_type: like_cmd.content_type.clone(),
-            content_id: like_cmd.content_id.clone(),
+            content_id: like_cmd.content_id,
             created_at,
             ..Default::default()
         };
 
+        // write on db
         let already_exists = self.db_repo.save(&like).await?;
 
-        info!("already_exists {}", already_exists);
+        debug!(
+            "already_exists {}, c_type:{}, c_id:{}",
+            already_exists, like_cmd.content_type, like_cmd.content_id
+        );
 
         if already_exists {
-            let count_res = self
-                .get_like_count(&like_cmd.content_type, &like_cmd.content_id)
+            // get curr like count for resp, if err return ( means cache && db are in err)
+            count = self
+                .get_like_count_with_fallback(&like_cmd.content_type, &like_cmd.content_id)
                 .await?;
-            count = count_res.count;
 
+            // take created at form db, needed for response
             let existed_like = self
                 .db_repo
                 .get_like(
@@ -83,6 +88,7 @@ impl LikeService {
                 .await?;
             created_at = existed_like.created_at;
         } else {
+            // try inc cache if fail, rollback DB return err
             count = match self
                 .cache_repo
                 .increment(&like_cmd.content_type, &like_cmd.content_id)
@@ -104,11 +110,14 @@ impl LikeService {
                 }
             };
 
-            let event = SseLikeEvent::from_like(like, count, SseEventType::Like);
-            let _ = self
-                .cache_repo
-                .publish_like_event(&like_cmd.content_type, &like_cmd.content_id, &event)
-                .await;
+            // heppie path, notify SSE
+            self.send_sse_event(
+                &like_cmd.content_id,
+                &like_cmd.content_type,
+                &like_cmd.user_id,
+                count,
+                SseEventType::Like,
+            );
         }
 
         Ok(AddLikeCommandResult {
@@ -126,24 +135,36 @@ impl LikeService {
         content_type: &ContentType,
         content_id: &ContentId,
     ) -> Result<UnlikeResponse, DomainError> {
+        // validate content so we are sure is not a fake content
         self.extern_repo
             .validate_content(content_type, content_id)
             .await?;
 
+        // remove from db returning if it was an axisting like
         let was_liked = self
             .db_repo
             .remove(user_id, content_type, content_id)
             .await?;
 
-        let mut current_count = self
-            .cache_repo
-            .get_count(content_type, content_id)
-            .await
-            .unwrap_or(0);
+        // get count in cache, fallback DB, if fail we are unable to return consistent count,
+        // return err
+        let mut curr_count = self
+            .get_like_count_with_fallback(content_type, content_id)
+            .await?;
 
-        if was_liked {
+        if !was_liked {
+            // not present in db, no decr no sse
+            return Ok(crate::api::dto::UnlikeResponse {
+                liked: false,
+                was_liked,
+                count: curr_count,
+            });
+        }
+
+        if curr_count != 0 {
+            // avoid set cache to -1
             match self.cache_repo.decrement(content_type, content_id).await {
-                Ok(new_count) => current_count = new_count,
+                Ok(new_count) => curr_count = new_count,
                 Err(e) => {
                     tracing::error!("Cache failure, rolling back DB: {:?}", e);
 
@@ -154,6 +175,7 @@ impl LikeService {
                         created_at: chrono::Utc::now(),
                         ..Default::default()
                     };
+
                     let _ = self
                         .db_repo
                         .save(&like)
@@ -163,26 +185,21 @@ impl LikeService {
                     return Err(e);
                 }
             }
-
-            let event = SseLikeEvent {
-                content_id: Some(content_id.clone()),
-                content_type: Some(content_type.clone()),
-                count: Some(current_count),
-                event: SseEventType::Unlike,
-                user_id: Some(user_id.clone()),
-                timestamp: chrono::Utc::now(),
-            };
-
-            let _ = self
-                .cache_repo
-                .publish_like_event(&content_type, &content_id, &event)
-                .await;
         }
 
-        Ok(crate::api::dto::UnlikeResponse {
+        //heppie path, send sse and return
+        self.send_sse_event(
+            content_id,
+            content_type,
+            user_id,
+            curr_count,
+            SseEventType::Unlike,
+        );
+
+        Ok(UnlikeResponse {
             liked: false,
             was_liked,
-            count: current_count,
+            count: curr_count,
         })
     }
 
@@ -191,34 +208,9 @@ impl LikeService {
         content_type: &ContentType,
         content_id: &ContentId,
     ) -> Result<CountResponse, DomainError> {
-        let cache_res = self.cache_repo.get_count(content_type, content_id).await;
-
-        if let Ok(count) = cache_res
-            && count != 0
-        {
-            debug!("found in cache, count {}", count);
-            return Ok(CountResponse {
-                content_type: content_type.to_string(),
-                content_id: content_id.to_string(),
-                count,
-            });
-        }
-
-        tracing::error!("Cache  get like count failure, fallback on DB",);
-
         let count = self
-            .db_repo
-            .get_likes_count(content_type, content_id)
+            .get_like_count_with_fallback(content_type, content_id)
             .await?;
-
-        if count > 0 {
-            tracing::warn!("refreshing cache from db resp , fallback on DB",);
-            let _ = self
-                .cache_repo
-                .set_value(content_type, content_id, count)
-                .await
-                .map_err(|err| error!("Cache fail refresh count from db value: {:?}", err));
-        }
 
         Ok(CountResponse {
             content_type: content_type.to_string(),
@@ -263,60 +255,75 @@ impl LikeService {
             return Err(DomainError::BatchTooLarge(items.len()));
         }
 
-        let cache_res = self.cache_repo.get_counts_batch(&items).await;
+        // cache read
+        let cached_counts = match self.cache_repo.get_counts_batch(&items).await {
+            Ok(counts) => counts,
+            Err(e) => {
+                tracing::warn!(
+                    "Cache failure during batch get, treating as full miss: {:?}",
+                    e
+                );
+                HashMap::new()
+            }
+        };
 
-        if let Ok(hash_map) = cache_res {
-            // Decouple counts from the map to release the borrow on 'items'
+        let mut results = Vec::with_capacity(items.len());
+        let mut missing_items = Vec::new();
 
-            let counts_only: HashMap<ContentId, u64> = hash_map
-                .into_iter()
-                .map(|(id, (_, count))| (id, count))
-                .collect();
-
-            // Consume 'items' to build the response without additional allocations
-            let res: Vec<ContentCount> = items
-                .into_iter()
-                .map(|item| {
-                    let count = counts_only.get(&item.content_id).copied().unwrap_or(0);
-
-                    ContentCount {
-                        content_id: item.content_id,
-                        content_type: item.content_type, // Move ownership: Zero-clone
-                        count,
-                    }
-                })
-                .collect();
-
-            return Ok(res);
+        // divide founded item from missing
+        for item in items {
+            if let Some(&count) = cached_counts.get(&item.content_id) {
+                // CACHE HIT
+                results.push(ContentCount {
+                    content_id: item.content_id,
+                    content_type: item.content_type, // Zero-clone: spostiamo la proprietà
+                    count,
+                });
+            } else {
+                // CACHE MISS
+                missing_items.push(item);
+            }
         }
 
-        tracing::error!(
-            "Cache miss or failure, falling back to DB: {:?}",
-            cache_res.unwrap_err()
+        // Hot Path quick
+        if missing_items.is_empty() {
+            return Ok(results);
+        }
+
+        tracing::info!(
+            "Batch counts: {} cache hits, {} misses. Falling back to DB for misses.",
+            results.len(),
+            missing_items.len()
         );
 
-        let content_count = self
+        let db_counts = self
             .db_repo
-            .get_counts_batch(&items)
+            .get_counts_batch(&missing_items)
             .await
             .inspect_err(|_| {
-                tracing::error!("Critical: Db fallback failure");
+                tracing::error!("Critical: Db fallback failure on batch counts");
             })?;
 
-        let cache_repo = self.cache_repo.clone();
-        // Cache hydration: Clone occurs only in the worst-case scenario (cache miss)
-        let content_count_cl = content_count.clone();
+        if !db_counts.is_empty() {
+            let cache_repo = self.cache_repo.clone();
+            let to_cache = db_counts.clone();
 
-        // Fire and Forget: update cache asynchronously to avoid latency on the main path
-        tokio::spawn(async move {
-            if let Err(e) = cache_repo.set_counts_batch(content_count_cl).await {
-                warn!("Failed to refresh cache from DB: {:?}", e);
-            } else {
-                warn!("Refresh cache from db succedes");
-            }
-        });
+            // fire-and-forget batch cache hydration
+            tokio::spawn(async move {
+                match cache_repo.set_counts_batch(to_cache).await {
+                    Err(e) => {
+                        tracing::warn!("Failed to refresh cache from DB: {:?}", e);
+                    }
+                    Ok(_) => {
+                        tracing::debug!("Batch cache refreshed successfully from DB");
+                    }
+                }
+            });
+        }
 
-        Ok(content_count)
+        results.extend(db_counts);
+
+        Ok(results)
     }
 
     // since there is a limit of 100 pair, i choose to calc the delta between db_resp | request
@@ -378,13 +385,13 @@ impl LikeService {
             .get_user_likes(user_id, content_type, cursor, limit + 1)
             .await?;
 
-        // 3. Controlla se c'è un'altra pagina
+        // check if there is one more page
         let mut next_cursor = None;
         if items.len() > limit {
             let last_item = &items[limit - 1];
             let next_cursor_obj = PaginationCursor {
                 t: last_item.created_at,
-                id: last_item.id, // Assumendo che il domain model abbia l'ID della riga
+                id: last_item.id,
             };
 
             let serialized = serde_json::to_vec(&next_cursor_obj).unwrap();
@@ -495,5 +502,89 @@ impl LikeService {
         self.cache_repo.health_check().await?;
         self.extern_repo.health_check().await?;
         Ok(())
+    }
+
+    // private methods
+
+    /// send fire-and-forget SSE event
+    fn send_sse_event(
+        &self,
+        content_id: &ContentId,
+        content_type: &ContentType,
+        user_id: &UserId,
+        count: u64,
+        e_type: SseEventType,
+    ) {
+        let event = SseLikeEvent {
+            content_id: Some(content_id.to_owned()),
+            content_type: Some(content_type.clone()),
+            user_id: Some(user_id.clone()),
+            event: e_type,
+            count: Some(count),
+            timestamp: chrono::Utc::now(),
+        };
+        let cache_cl = self.cache_repo.clone();
+        tokio::spawn(async move { cache_cl.publish_like_event(&event).await });
+    }
+
+    async fn get_cache_like_count(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+    ) -> Result<u64, DomainError> {
+        let count = self.cache_repo.get_count(c_type, c_id).await?;
+
+        let Some(count) = count else {
+            return Err(DomainError::CacheMiss);
+        };
+
+        debug!(
+            "found count in cache for {} {}, count: {}",
+            c_type, c_id, count
+        );
+
+        Ok(count)
+    }
+
+    /// this method fail if cache & DB fail, otherwise return count
+    async fn get_like_count_with_fallback(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+    ) -> Result<u64, DomainError> {
+        let cache_res = self.get_cache_like_count(c_type, c_id).await;
+
+        if let Ok(count) = cache_res {
+            // carche was hot, returning
+            return Ok(count);
+        }
+
+        tracing::warn!("Cache get like count failure, fallback on DB");
+
+        // if db fail as well return error
+        let count = self.db_repo.get_likes_count(c_type, c_id).await?;
+
+        self.hydratate_count_cache(c_type, c_id, count);
+
+        return Ok(count);
+    }
+
+    /// fire & forget cache count hydratation
+    fn hydratate_count_cache(&self, c_type: &ContentType, c_id: &ContentId, count: u64) {
+        let cache_repo_cl = self.cache_repo.clone();
+        let c_type = c_type.clone();
+        let c_id = c_id.clone();
+        tokio::spawn(async move {
+            tracing::debug!(
+                "try hydratation count cache from db for c_type:{} c_id:{} count:{}",
+                c_type,
+                c_id,
+                count
+            );
+            cache_repo_cl
+                .set_value(&c_type, &c_id, count)
+                .await
+                .map_err(|err| error!("Cache fail refresh count from db value: {:?}", err))
+        });
     }
 }

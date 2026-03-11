@@ -55,7 +55,7 @@ pub struct CountResponse {
 #[derive(Debug, Serialize, Default)]
 pub struct StatusResponse {
     pub liked: bool,
-    pub liked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub liked_at: Option<DateTime<Utc>>,
 }
 
 // batch
