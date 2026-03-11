@@ -1,3 +1,4 @@
+use futures_util::stream::BoxStream;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -112,6 +113,15 @@ pub trait LikeCacheRepository: Send + Sync {
         window: &str,
         c_type: &ContentType,
     ) -> Result<bool, DomainError>;
+
+    async fn get_async_pubsub_stream(&self) -> Result<BoxStream<'static, String>, DomainError>;
+
+    async fn publish_like_event(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+        event: &crate::api::dto::SseLikeEvent,
+    ) -> Result<(), DomainError>;
 
     async fn health_check(&self) -> Result<(), DomainError>;
 }

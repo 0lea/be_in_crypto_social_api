@@ -3,6 +3,7 @@ use crate::{
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, Like},
+        user::UserId,
     },
 };
 use base64::{Engine, engine::general_purpose};
@@ -177,4 +178,42 @@ pub struct ErrorDetail {
     pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamQuery {
+    pub content_type: ContentType,
+    pub content_id: ContentId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SseEventType {
+    Like,
+    Unlike,
+    Heartbeat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SseLikeEvent {
+    pub event: SseEventType,
+    pub content_type: Option<ContentType>,
+    pub content_id: Option<ContentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<UserId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    pub timestamp: DateTime<Utc>,
+}
+
+impl SseLikeEvent {
+    pub fn from_like(like: Like, count: u64, e_type: SseEventType) -> Self {
+        Self {
+            content_id: Some(like.content_id),
+            content_type: Some(like.content_type),
+            count: Some(count),
+            event: e_type,
+            user_id: Some(like.user_id),
+            timestamp: like.created_at,
+        }
+    }
 }

@@ -1,5 +1,5 @@
 use social_api::{
-    application::like_service::LikeService,
+    application::{like_service::LikeService, sse::SseManager},
     create_app,
     domain::external_validator::ExternalValidator,
     infrastructure::{
@@ -36,17 +36,22 @@ async fn main() {
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
     let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
-
-    // 3. Il validatore riceve la mappa dinamica dei Content API!
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
         config.profile_api_url.clone(),
         config.content_apis.clone(),
     ));
+    let sse_manager = Arc::new(SseManager::new(cache_repo.clone()));
+
+    let sse_worker = sse_manager.clone();
+    tokio::spawn(async move {
+        sse_worker.run_cache_event_listener().await;
+    });
 
     let like_service = Arc::new(LikeService::new(
         db_repo,
         cache_repo,
         extern_validator.clone(),
+        sse_manager,
     ));
 
     let app = create_app(like_service, extern_validator);

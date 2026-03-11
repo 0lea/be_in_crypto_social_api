@@ -5,9 +5,13 @@ use tracing::{debug, error, info, warn};
 use crate::{
     api::dto::{
         BatchStatusResponse, ContentCount, ContentItem, ContentStatus, CountResponse,
-        PaginationCursor, StatusResponse, TopLikesResponse, UnlikeResponse, UserLikesResponse,
+        PaginationCursor, SseEventType, SseLikeEvent, StatusResponse, TopLikesResponse,
+        UnlikeResponse, UserLikesResponse,
     },
-    application::commands::{AddLikeCommand, AddLikeCommandResult},
+    application::{
+        commands::{AddLikeCommand, AddLikeCommandResult},
+        sse::SseManager,
+    },
     domain::{
         errors::DomainError,
         external_validator::ExternalValidator,
@@ -21,6 +25,7 @@ pub struct LikeService {
     db_repo: Arc<dyn LikeDbRepository>,
     cache_repo: Arc<dyn LikeCacheRepository>,
     extern_repo: Arc<dyn ExternalValidator>,
+    pub sse_manager: Arc<SseManager>,
 }
 
 impl LikeService {
@@ -28,11 +33,13 @@ impl LikeService {
         db_repo: Arc<dyn LikeDbRepository>,
         cache_repo: Arc<dyn LikeCacheRepository>,
         extern_repo: Arc<dyn ExternalValidator>,
+        sse_manager: Arc<SseManager>,
     ) -> Self {
         Self {
             db_repo,
             cache_repo,
             extern_repo,
+            sse_manager,
         }
     }
 
@@ -59,6 +66,7 @@ impl LikeService {
         let already_exists = self.db_repo.save(&like).await?;
 
         info!("already_exists {}", already_exists);
+
         if already_exists {
             let count_res = self
                 .get_like_count(&like_cmd.content_type, &like_cmd.content_id)
@@ -95,6 +103,12 @@ impl LikeService {
                     return Err(e);
                 }
             };
+
+            let event = SseLikeEvent::from_like(like, count, SseEventType::Like);
+            let _ = self
+                .cache_repo
+                .publish_like_event(&like_cmd.content_type, &like_cmd.content_id, &event)
+                .await;
         }
 
         Ok(AddLikeCommandResult {
@@ -149,6 +163,20 @@ impl LikeService {
                     return Err(e);
                 }
             }
+
+            let event = SseLikeEvent {
+                content_id: Some(content_id.clone()),
+                content_type: Some(content_type.clone()),
+                count: Some(current_count),
+                event: SseEventType::Unlike,
+                user_id: Some(user_id.clone()),
+                timestamp: chrono::Utc::now(),
+            };
+
+            let _ = self
+                .cache_repo
+                .publish_like_event(&content_type, &content_id, &event)
+                .await;
         }
 
         Ok(crate::api::dto::UnlikeResponse {

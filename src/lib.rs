@@ -7,7 +7,7 @@ use crate::{
     api::{
         handlers::{
             delete_unlike, get_count, get_count_batch, get_status, get_status_batch, get_top_likes,
-            get_user_likes, post_like,
+            get_user_likes, post_like, sse_stream,
         },
         health,
         middleware::{auth_middleware, tracing_middleware},
@@ -30,7 +30,8 @@ pub fn create_app(
     let public_routes = Router::new()
         .route("/likes/batch/counts", post(get_count_batch))
         .route("/likes/{content_type}/{content_id}/count", get(get_count))
-        .route("/likes/top", get(get_top_likes));
+        .route("/likes/top", get(get_top_likes))
+        .route("/likes/stream", get(sse_stream));
 
     let protected_routes = Router::new()
         .route("/likes", post(post_like))

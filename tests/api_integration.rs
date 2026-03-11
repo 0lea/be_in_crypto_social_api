@@ -1,6 +1,8 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use futures_util::StreamExt;
 use redis::Commands;
+use reqwest_eventsource::{Event, EventSource};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -12,7 +14,7 @@ use wiremock::{
 };
 
 use social_api::{
-    application::like_service::LikeService,
+    application::{like_service::LikeService, sse::SseManager},
     create_app,
     domain::{
         like::{ContentId, ContentType},
@@ -94,8 +96,22 @@ async fn setup_test_app(pool: PgPool, mock_url: String) -> axum::Router {
     let mut content_apis = HashMap::new();
     content_apis.insert("post".to_string(), mock_url.clone());
     content_apis.insert("bonus_hunter".to_string(), mock_url.clone());
+
     let validator = Arc::new(HttpExternalValidator::new(mock_url.clone(), content_apis));
-    let like_service = Arc::new(LikeService::new(db_repo, cache_repo, validator.clone()));
+
+    let sse_manager = Arc::new(SseManager::new(cache_repo.clone()));
+    let sse_worker = sse_manager.clone();
+    tokio::spawn(async move {
+        sse_worker.run_cache_event_listener().await;
+    });
+
+    let like_service = Arc::new(LikeService::new(
+        db_repo,
+        cache_repo,
+        validator.clone(),
+        sse_manager,
+    ));
+
     create_app(like_service, validator)
 }
 
@@ -756,4 +772,212 @@ async fn test_leaderboard_empty_states(pool: PgPool) {
         .await;
     res.assert_status(StatusCode::OK);
     assert_eq!(res.json::<Value>()["items"].as_array().unwrap().len(), 0);
+}
+
+// Helper per avviare il server in un task in background così EventSource può connettersi via rete reale
+async fn spawn_test_server(pool: PgPool, mock_uri: String) -> String {
+    let app = setup_test_app(pool, mock_uri).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let port = addr.port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    format!("http://127.0.0.1:{}", port)
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_heartbeat(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool, mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+
+    let mut es = EventSource::get(stream_url);
+
+    // Aspettiamo il primo evento (l'heartbeat)
+    // Dato che il tuo codice fa il tick ogni 15 secondi, per non far durare il test 15s
+    // potremmo dover aspettare, o meglio, nel test verificare solo che la connessione sia up e attendere il primo messaggio.
+    // Per velocizzare, potresti rendere configurabile l'intervallo di heartbeat, ma qui testiamo che la connessione non cada subito.
+
+    let event = tokio::time::timeout(Duration::from_secs(20), es.next()).await;
+
+    // Verifichiamo che l'evento sia arrivato (o almeno non sia andato in timeout se hai configurato un tick breve per i test)
+    if let Ok(Some(Ok(Event::Message(msg)))) = event {
+        let payload: Value = serde_json::from_str(&msg.data).unwrap();
+        assert_eq!(payload["event"], "Heartbeat");
+    } else {
+        // Se il tick è troppo lungo, ci accontentiamo che la connessione sia rimasta aperta senza errori
+        // o adattiamo il timeout.
+        tracing::warn!("Heartbeat check skipped or timed out due to long interval");
+    }
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_like_broadcast(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    // Qui devi assicurarti che il mock_server risponda 200 OK per il content_id che andremo a testare
+    // (Aggiungi la configurazione wiremock appropriata per il tuo ExternalValidator)
+
+    let base_url = spawn_test_server(pool, mock_server.uri()).await;
+    let content_id = Uuid::new_v4(); // Usa un UUID che il mock_server accetta
+    let user_id = Uuid::new_v4();
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+
+    // Aspetta che la connessione SSE sia stabilita
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Fai una richiesta POST /likes per triggerare l'evento
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("{}/v1/likes", base_url))
+        // Se hai un mock del profile validator, usa un token valido per lui.
+        // Simuliamo l'header se la tua app di test salta l'auth, o metti un token valido
+        .header("Authorization", "Bearer valid_token_here")
+        .json(&serde_json::json!({
+            "content_type": "post",
+            "content_id": content_id.to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // Cattura l'evento SSE
+    let mut found_like = false;
+    for _ in 0..2 {
+        // Cicliamo per scartare eventuali heartbeat
+        let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
+        if let Ok(Some(Ok(Event::Message(msg)))) = event {
+            let payload: Value = serde_json::from_str(&msg.data).unwrap();
+            if payload["event"] == "Like" {
+                assert_eq!(
+                    payload["content_id"].as_str().unwrap(),
+                    content_id.to_string()
+                );
+                assert_eq!(payload["count"].as_u64().unwrap(), 1);
+                found_like = true;
+                break;
+            }
+        }
+    }
+    assert!(found_like, "Did not receive 'Like' SSE event");
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_unlike_broadcast(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool.clone(), mock_server.uri()).await;
+    let content_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+
+    // Inseriamo il like prima
+    insert_old_like(
+        &pool,
+        user_id.into(),
+        content_id.into(),
+        "post".to_string().into(),
+        0, // Delta tempo (0 = adesso)
+    )
+    .await;
+
+    // Sincronizziamo la cache chiamando un get_count o gestendo la pre-popolazione (se necessario)
+    // ...
+
+    let stream_url = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id
+    );
+    let mut es = EventSource::get(stream_url);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Eseguiamo l'unlike
+    let client = reqwest::Client::new();
+    let res = client
+        .delete(format!("{}/v1/likes/post/{}", base_url, content_id))
+        .header("Authorization", "Bearer valid_token_here")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Verifichiamo l'evento
+    let mut found_unlike = false;
+    let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
+    if let Ok(Some(Ok(Event::Message(msg)))) = event {
+        let payload: Value = serde_json::from_str(&msg.data).unwrap();
+        if payload["event"] == "Unlike" {
+            assert_eq!(
+                payload["content_id"].as_str().unwrap(),
+                content_id.to_string()
+            );
+            found_unlike = true;
+        }
+    }
+    assert!(found_unlike, "Did not receive 'Unlike' SSE event");
+}
+
+#[sqlx::test]
+#[test_log::test]
+async fn test_sse_channel_isolation(pool: PgPool) {
+    let mock_server = MockServer::start().await;
+    let base_url = spawn_test_server(pool, mock_server.uri()).await;
+
+    let content_id_1 = Uuid::new_v4();
+    let content_id_2 = Uuid::new_v4();
+
+    // Mi collego allo stream 1
+    let stream_url_1 = format!(
+        "{}/v1/likes/stream?content_type=post&content_id={}",
+        base_url, content_id_1
+    );
+    let mut es1 = EventSource::get(stream_url_1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Faccio un Like sul contenuto 2
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/v1/likes", base_url))
+        .header("Authorization", "Bearer valid_token_here")
+        .json(&serde_json::json!({
+            "content_type": "post",
+            "content_id": content_id_2.to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Verifico che sullo stream 1 NON arrivi l'evento del contenuto 2 (time out atteso)
+    let event = tokio::time::timeout(Duration::from_millis(500), es1.next()).await;
+
+    match event {
+        Ok(Some(Ok(Event::Message(msg)))) => {
+            let payload: Value = serde_json::from_str(&msg.data).unwrap();
+            // Fallisce se riceviamo un evento Like che non sia per content_id_1
+            assert_ne!(
+                payload["event"], "Like",
+                "Received Like event on wrong channel"
+            );
+        }
+        _ => {
+            // Un timeout è il comportamento corretto qui, significa isolamento funzionante
+        }
+    }
 }

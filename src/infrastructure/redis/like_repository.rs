@@ -1,14 +1,18 @@
 use crate::{
-    api::dto::{ContentCount, ContentItem, TopLikeItem},
+    api::dto::{ContentCount, ContentItem, SseLikeEvent, TopLikeItem},
     domain::{
         errors::DomainError,
         like::{ContentId, ContentType, LikeCacheRepository},
     },
 };
+use futures_util::StreamExt;
 
 use async_trait::async_trait;
+use futures_util::stream::BoxStream;
 use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use std::{collections::HashMap, sync::Arc};
+
+const SSE_EVENTS_KEY: &str = "sse:events";
 
 enum LeadKeyType {
     Data,
@@ -36,6 +40,14 @@ impl RedisLikeRepository {
 
     fn format_count_key(&self, c_type: &ContentType, c_id: &ContentId) -> String {
         format!("count:{}:{}", c_type.as_str(), c_id.0)
+    }
+
+    fn format_channel_key(&self, c_type: &ContentType, c_id: &ContentId) -> String {
+        format!("{}:{}:{}", SSE_EVENTS_KEY, c_type.as_str(), c_id.0)
+    }
+
+    fn format_all_channels_key(&self) -> String {
+        format!("{}:*", SSE_EVENTS_KEY)
     }
 
     fn format_lead_key(&self, k_type: LeadKeyType, window: &str, c_type: &ContentType) -> String {
@@ -271,9 +283,6 @@ impl LikeCacheRepository for RedisLikeRepository {
         let mut conn = self.get_conn().await?;
         let lock_key = self.format_lead_key(LeadKeyType::Lock, window, c_type);
 
-        // Tentiamo di impostare una chiave "lock" che scade dopo 10 secondi.
-        // NX: Solo se non esiste.
-        // EX 10: Se il task crasha, il lock si libera da solo dopo 10s.
         let acquired: Option<String> = redis::cmd("SET")
             .arg(&lock_key)
             .arg("locked")
@@ -295,5 +304,50 @@ impl LikeCacheRepository for RedisLikeRepository {
             .map_err(|e| DomainError::CacheHealthError(e.to_string()))?;
 
         Ok(())
+    }
+
+    // SSE
+
+    async fn publish_like_event(
+        &self,
+        c_type: &ContentType,
+        c_id: &ContentId,
+        event: &SseLikeEvent,
+    ) -> Result<(), DomainError> {
+        let mut conn = self.get_conn().await?;
+
+        let channel = format!("sse:events:{}:{}", c_type.as_str(), c_id.0);
+
+        let payload = serde_json::to_string(event)
+            .map_err(|e| DomainError::CacheError(format!("JSON error: {}", e)))?;
+
+        let _: () = redis::cmd("PUBLISH")
+            .arg(&channel)
+            .arg(&payload)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_async_pubsub_stream(&self) -> Result<BoxStream<'static, String>, DomainError> {
+        let mut pubsub = self
+            .client
+            .get_async_pubsub()
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        let all_chan_key = self.format_all_channels_key();
+        pubsub
+            .psubscribe(all_chan_key)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+
+        let stream = pubsub
+            .into_on_message()
+            .map(|msg| msg.get_payload::<String>().unwrap_or_default());
+
+        Ok(stream.boxed())
     }
 }

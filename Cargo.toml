@@ -42,6 +42,9 @@ tracing-subscriber = { version = "0.3", features = [
 
 reqwest = { version = "0.13", features = ["json"] }
 base64 = "0.22"
+futures-util = "0.3.32"
+dashmap = "6.1.0"
+async-stream = "0.3.6"
 
 
 [dev-dependencies]
@@ -55,3 +58,4 @@ serde_json = "1.0"
 http-body-util = "0.1"
 test-log = { version = "0.2", features = ["trace"] }
 env_logger = "0.11"
+reqwest-eventsource = "0.6.0"
