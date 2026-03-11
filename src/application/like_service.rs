@@ -48,7 +48,7 @@ impl LikeService {
         &self,
         like_cmd: AddLikeCommand,
     ) -> Result<AddLikeCommandResult, DomainError> {
-        let mut count: u64;
+        let count: u64;
         // validate content
         self.extern_repo
             .validate_content(&like_cmd.content_type, &like_cmd.content_id)
@@ -88,38 +88,36 @@ impl LikeService {
                 .await?;
             created_at = existed_like.created_at;
         } else {
-            // try inc cache if fail, rollback DB return err
-            count = match self
+            match self
                 .cache_repo
                 .increment(&like_cmd.content_type, &like_cmd.content_id)
                 .await
             {
-                Ok(count) => count,
-                Err(e) => {
-                    tracing::error!("Cache failure, rolling back DB: {:?}", e);
-                    let _ = self
-                        .db_repo
-                        .remove(
-                            &like_cmd.user_id,
-                            &like_cmd.content_type,
-                            &like_cmd.content_id,
-                        )
-                        .await
-                        .map_err(|e| error!("Error rolling back from add_like: {:?}", e));
-                    return Err(e);
+                Ok(new_count) => {
+                    // Cache up, use his count
+                    count = new_count;
                 }
-            };
-
-            // heppie path, notify SSE
-            self.send_sse_event(
-                &like_cmd.content_id,
-                &like_cmd.content_type,
-                &like_cmd.user_id,
-                count,
-                SseEventType::Like,
-            );
+                Err(e) => {
+                    tracing::error!(
+                        "Resilience Mode: Cache fail, fetching count from DB: {:?}",
+                        e
+                    );
+                    // cache fail, go to db if DB fail, return
+                    count = self
+                        .db_repo
+                        .get_likes_count(&like_cmd.content_type, &like_cmd.content_id)
+                        .await?
+                }
+            }
         }
 
+        self.send_sse_event(
+            &like_cmd.content_id,
+            &like_cmd.content_type,
+            &like_cmd.user_id,
+            count,
+            SseEventType::Like,
+        );
         Ok(AddLikeCommandResult {
             liked: true,
             count,
@@ -166,28 +164,19 @@ impl LikeService {
             match self.cache_repo.decrement(content_type, content_id).await {
                 Ok(new_count) => curr_count = new_count,
                 Err(e) => {
-                    tracing::error!("Cache failure, rolling back DB: {:?}", e);
-
-                    let like = Like {
-                        user_id: user_id.clone(),
-                        content_type: content_type.clone(),
-                        content_id: content_id.clone(),
-                        created_at: chrono::Utc::now(),
-                        ..Default::default()
-                    };
-
-                    let _ = self
+                    tracing::error!(
+                        "Resilience Mode: Cache fail, fetching count from DB: {:?}",
+                        e
+                    );
+                    // cache fail, go to db if DB fail, return
+                    curr_count = self
                         .db_repo
-                        .save(&like)
-                        .await
-                        .map_err(|e| error!("Error rolling back from remove_like: {:?}", e));
-
-                    return Err(e);
+                        .get_likes_count(content_type, content_id)
+                        .await?
                 }
             }
         }
 
-        //heppie path, send sse and return
         self.send_sse_event(
             content_id,
             content_type,
