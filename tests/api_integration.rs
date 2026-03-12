@@ -11,12 +11,17 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 use wiremock::MockServer;
 
-use social_api::domain::{
-    like::{ContentId, ContentType},
-    user::UserId,
+use social_api::{
+    domain::{
+        like::{ContentId, ContentType},
+        user::UserId,
+    },
+    infrastructure::config::Config,
 };
 
-use crate::common::{auth_err, auth_ok, bonus_hunter_ok, post_err, post_ok, setup_test_context};
+use crate::common::{
+    auth_err, auth_ok, bonus_hunter_ok, insert_old_like, post_err, post_ok, setup_test_context,
+};
 
 // #[sqlx::test]
 // #[test_log::test]
@@ -503,30 +508,9 @@ async fn test_user_likes_pagination_and_filtering(pool: PgPool) {
     );
 }
 
-async fn insert_old_like(
-    pool: &PgPool,
-    user_id: UserId,
-    content_id: ContentId,
-    c_type: ContentType,
-    hours_ago: i32,
-) {
-    sqlx::query!(
-        "INSERT INTO likes (user_id, content_id, content_type, created_at) 
-         VALUES ($1, $2, $3, NOW() - make_interval(hours => $4))",
-        user_id.0,
-        content_id.0,
-        c_type.as_str(),
-        hours_ago
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 #[sqlx::test]
 #[test_log::test]
 async fn test_leaderboard_full_lifecycle(pool: PgPool) {
-    let mock_server = MockServer::start().await;
     let ctx = setup_test_context(pool.clone(), |_| {}).await;
     let server = TestServer::new(ctx.router);
 
@@ -675,32 +659,32 @@ async fn test_leaderboard_empty_states(pool: PgPool) {
     assert_eq!(res.json::<Value>()["items"].as_array().unwrap().len(), 0);
 }
 
-async fn spawn_test_server(pool: PgPool, _mock_uri: String) -> String {
-    let ctx = setup_test_context(pool.clone(), |_| {}).await;
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let port = addr.port();
-
-    tokio::spawn(async move {
-        axum::serve(listener, ctx.router.into_make_service())
-            .await
-            .unwrap();
-    });
-
-    format!("http://127.0.0.1:{}", port)
-}
+// async fn spawn_test_server(pool: PgPool, _mock_uri: String) -> String {
+//     let ctx = setup_test_context(pool.clone(), |_| {}).await;
+//
+//     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+//     let addr = listener.local_addr().unwrap();
+//     let port = addr.port();
+//
+//     tokio::spawn(async move {
+//         axum::serve(listener, ctx.router.into_make_service())
+//             .await
+//             .unwrap();
+//     });
+//
+//     format!("http://127.0.0.1:{}", port)
+// }
 
 #[sqlx::test]
 #[test_log::test]
 async fn test_sse_heartbeat(pool: PgPool) {
     let ctx = setup_test_context(pool.clone(), |_| {}).await;
-    let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
+    // let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
     let content_id = Uuid::new_v4();
 
     let stream_url = format!(
         "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id
+        ctx.base_url, content_id
     );
 
     let mut es = EventSource::get(stream_url);
@@ -729,7 +713,7 @@ async fn test_sse_heartbeat(pool: PgPool) {
 #[test_log::test]
 async fn test_sse_channel_isolation(pool: PgPool) {
     let ctx = setup_test_context(pool.clone(), |_| {}).await;
-    let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
+    // let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
 
     let content_id_1 = Uuid::new_v4();
     let content_id_2 = Uuid::new_v4();
@@ -739,7 +723,7 @@ async fn test_sse_channel_isolation(pool: PgPool) {
     // Mi collego allo stream 1
     let stream_url_1 = format!(
         "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id_1
+        ctx.base_url, content_id_1
     );
     let mut es1 = EventSource::get(stream_url_1);
     let _ = tokio::time::timeout(Duration::from_millis(50), es1.next()).await;
@@ -750,7 +734,7 @@ async fn test_sse_channel_isolation(pool: PgPool) {
     post_ok(&content_id_2.to_string(), &ctx.mock_server).await;
     let client = reqwest::Client::new();
     client
-        .post(format!("{}/v1/likes", base_url))
+        .post(format!("{}/v1/likes", ctx.base_url))
         .header("Authorization", "Bearer valid_token_here")
         .json(&serde_json::json!({
             "content_type": "post",
@@ -896,7 +880,7 @@ async fn test_sse_channel_isolation(pool: PgPool) {
 #[test_log::test]
 async fn test_sse_no_event_on_duplicate_like(pool: PgPool) {
     let ctx = setup_test_context(pool.clone(), |_| {}).await;
-    let base_url = spawn_test_server(pool.clone(), ctx.mock_server.uri()).await;
+    // let base_url = spawn_test_server(pool.clone(), ctx.mock_server.uri()).await;
     let content_id = Uuid::new_v4();
     let user_id_str = Uuid::new_v4().to_string();
     let user_uuid = Uuid::parse_str(&user_id_str).unwrap();
@@ -916,20 +900,18 @@ async fn test_sse_no_event_on_duplicate_like(pool: PgPool) {
 
     let stream_url = format!(
         "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id
+        ctx.base_url, content_id
     );
     let mut es = EventSource::get(stream_url);
     let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    auth_ok(&user_uuid.to_string(), &ctx.mock_server).await;
-    post_ok(&content_id.to_string(), &ctx.mock_server).await; // MANDIAMO IL SECONDO LIKE (Idempotenza)
-
     auth_ok(&user_id_str, &ctx.mock_server).await;
     post_ok(&content_id.to_string(), &ctx.mock_server).await;
+
     let client = reqwest::Client::new();
     let res = client
-        .post(format!("{}/v1/likes", base_url))
+        .post(format!("{}/v1/likes", ctx.base_url))
         .header("Authorization", format!("Bearer {}", user_id_str))
         .json(&serde_json::json!({
             "content_type": "post",
@@ -956,7 +938,7 @@ async fn test_sse_no_event_on_duplicate_like(pool: PgPool) {
 #[test_log::test]
 async fn test_sse_no_event_on_unlike_not_liked(pool: PgPool) {
     let ctx = setup_test_context(pool.clone(), |_| {}).await;
-    let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
+    // let base_url = spawn_test_server(pool, ctx.mock_server.uri()).await;
     let content_id = Uuid::new_v4();
     let user_id_str = Uuid::new_v4().to_string();
 
@@ -967,7 +949,7 @@ async fn test_sse_no_event_on_unlike_not_liked(pool: PgPool) {
 
     let stream_url = format!(
         "{}/v1/likes/stream?content_type=post&content_id={}",
-        base_url, content_id
+        ctx.base_url, content_id
     );
     let mut es = EventSource::get(stream_url);
     let _ = tokio::time::timeout(Duration::from_millis(50), es.next()).await;
@@ -976,7 +958,7 @@ async fn test_sse_no_event_on_unlike_not_liked(pool: PgPool) {
     // Mandiamo un UNLIKE su una cosa a cui non abbiamo messo like
     let client = reqwest::Client::new();
     let res = client
-        .delete(format!("{}/v1/likes/post/{}", base_url, content_id))
+        .delete(format!("{}/v1/likes/post/{}", ctx.base_url, content_id))
         .header("Authorization", format!("Bearer {}", user_id_str))
         .send()
         .await
@@ -1136,37 +1118,11 @@ async fn test_rate_limiting_and_retry_after(pool: PgPool) {
 #[sqlx::test]
 #[test_log::test]
 async fn test_redis_failure_fallback(pool: PgPool) {
-    // Setup with a broken Redis connection string
-    let mut config = social_api::infrastructure::config::Config::from_env();
-    config.redis_url = "redis://127.0.0.1:1111".to_string(); // Invalid port
-
-    // Replicate setup logic just for this test to inject bad redis
-    let ctx = setup_test_context(pool.clone(), |_| {}).await;
-
-    let redis_client = redis::Client::open(config.redis_url.clone()).unwrap();
-    let cache_repo = Arc::new(
-        social_api::infrastructure::redis::like_repository::RedisLikeRepository::new(Arc::new(
-            redis_client,
-        )),
-    );
-    let db_repo = Arc::new(
-        social_api::infrastructure::postgres::like_repository::PostgresLikeRepository::new(
-            Arc::new(pool),
-        ),
-    );
-    let extern_validator: Arc<dyn social_api::domain::external_validator::ExternalValidator> = Arc::new(social_api::infrastructure::clients::http_external_validator::HttpExternalValidator::new(config.profile_api_url.clone(), config.content_apis.clone()));
-    let sse_manager = Arc::new(social_api::application::sse::SseManager::new(
-        cache_repo.clone(),
-    ));
-    let like_service = Arc::new(social_api::application::like_service::LikeService::new(
-        db_repo,
-        cache_repo.clone(),
-        extern_validator.clone(),
-        sse_manager,
-    ));
-    let app = social_api::create_app(like_service, extern_validator, cache_repo, &config);
-
-    let server = TestServer::new(app);
+    let ctx = setup_test_context(pool, |cfg| {
+        cfg.redis_url = "redis://127.0.0.1:1111".to_string()
+    })
+    .await;
+    let server = TestServer::new(ctx.router);
 
     let test_user_id = uuid::Uuid::new_v4().to_string();
     let test_post_id = uuid::Uuid::new_v4().to_string();

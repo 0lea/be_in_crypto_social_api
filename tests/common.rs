@@ -35,7 +35,7 @@ pub async fn setup_test_context(
 ) -> TestContext {
     let mock_server = MockServer::start().await;
     let mut config = Config::from_env();
-    // Inibiamo o rilassiamo i limiti di default per non disturbare gli altri test
+
     config.rate_limit_write_per_minute = 1000;
     config.rate_limit_read_per_minute = 5000;
     config.profile_api_url = mock_server.uri();
@@ -47,6 +47,7 @@ pub async fn setup_test_context(
         .insert("bonus_hunter".to_string(), mock_server.uri());
     config.rate_limit_write_per_minute = 10000; // Rilassato di default
 
+    config.redis_url = std::env::var("REDIS_TEST_URL").unwrap_or("redis://127.0.0.1:6379/2".into());
     // Applichiamo le modifiche specifiche del test (es. per testare il rate limit)
     config_override(&mut config);
 
