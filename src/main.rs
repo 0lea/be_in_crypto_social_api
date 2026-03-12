@@ -35,20 +35,19 @@ async fn main() {
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool.clone())));
     let cache_repo = RedisLikeRepository::new(Arc::new(redis_client)).await;
-    let cache_repo_a = Arc::new(cache_repo);
 
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
         config.profile_api_url.clone(),
         config.content_apis.clone(),
-        cache_repo_a.clone(),
+        cache_repo.clone(),
     ));
 
-    let rate_limiter = cache_repo_a.clone();
+    let rate_limiter = cache_repo.clone();
 
     let shutdown_token = CancellationToken::new();
 
     let sse_token = shutdown_token.clone();
-    let sse_manager = Arc::new(SseManager::new(cache_repo_a.clone(), sse_token));
+    let sse_manager = Arc::new(SseManager::new(cache_repo.clone(), sse_token));
     let sse_worker = sse_manager.clone();
     tokio::spawn(async move {
         sse_worker.run_cache_event_listener().await;
@@ -57,7 +56,7 @@ async fn main() {
     let service_c_token = shutdown_token.clone();
     let like_service = Arc::new(LikeService::new(
         db_repo,
-        cache_repo_a,
+        cache_repo,
         extern_validator.clone(),
         sse_manager,
         service_c_token,
@@ -107,7 +106,6 @@ async fn shutdown_signal(pool: sqlx::PgPool, token: CancellationToken) {
     }
 
     println!("Starting shutdown...");
-
     token.cancel();
 
     tokio::time::timeout(Duration::from_secs(2), pool.close())

@@ -49,6 +49,7 @@ futures-util = "0.3.32"
 dashmap = "6.1.0"
 async-stream = "0.3.6"
 blake3 = "1.8.3"
+arc-swap = "1.8.2"
 
 [dev-dependencies]
 axum-test = "19.1.1"

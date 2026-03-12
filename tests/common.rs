@@ -53,7 +53,7 @@ pub async fn setup_test_context(
     config_override(&mut config);
 
     let redis_client = redis::Client::open(config.redis_url.clone()).unwrap();
-    let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)).await);
+    let cache_repo = RedisLikeRepository::new(Arc::new(redis_client)).await;
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
 
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
