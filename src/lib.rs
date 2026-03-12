@@ -10,10 +10,11 @@ use crate::{
             get_user_likes, post_like, sse_stream,
         },
         health,
-        middleware::{auth_middleware, tracing_middleware},
+        middleware::{auth_middleware, rate_limit_layer, tracing_middleware},
     },
     application::like_service::LikeService,
-    domain::external_validator::ExternalValidator,
+    domain::{external_validator::ExternalValidator, rate_limit::RateLimiter},
+    infrastructure::config::Config,
 };
 use axum::{
     Router,
@@ -23,15 +24,38 @@ use axum::{
 use std::sync::Arc;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
+#[derive(Clone)]
+pub struct RateLimitConfig {
+    pub limiter: Arc<dyn RateLimiter>,
+    pub limit: u64,
+    pub window: u64,
+}
+
 pub fn create_app(
     like_service: Arc<LikeService>,
     extern_validator: Arc<dyn ExternalValidator>,
+    rate_limiter: Arc<dyn RateLimiter>,
+    config: &Config,
 ) -> axum::Router {
+    let read_limit = RateLimitConfig {
+        limiter: rate_limiter.clone(),
+        limit: config.rate_limit_read_per_minute,
+        window: 60,
+    };
+
+    let write_limit = RateLimitConfig {
+        limiter: rate_limiter.clone(),
+        limit: config.rate_limit_write_per_minute,
+        window: 60,
+    };
+
     let public_routes = Router::new()
         .route("/likes/batch/counts", post(get_count_batch))
         .route("/likes/{content_type}/{content_id}/count", get(get_count))
         .route("/likes/top", get(get_top_likes))
-        .route("/likes/stream", get(sse_stream));
+        .route("/likes/stream", get(sse_stream))
+        // Applichiamo il limite READ qui
+        .layer(from_fn_with_state(read_limit, rate_limit_layer));
 
     let protected_routes = Router::new()
         .route("/likes", post(post_like))
@@ -39,12 +63,13 @@ pub fn create_app(
         .route("/likes/{content_type}/{content_id}/status", get(get_status))
         .route("/likes/user", get(get_user_likes))
         .route("/likes/batch/statuses", post(get_status_batch))
+        .layer(from_fn_with_state(write_limit, rate_limit_layer))
         .layer(from_fn_with_state(
             extern_validator.clone(),
             auth_middleware,
         ));
 
-    let health_routes: Router<Arc<LikeService>> = health::healt_router();
+    let health_routes = health::healt_router();
     let v1_routes = public_routes.merge(protected_routes);
 
     Router::new()

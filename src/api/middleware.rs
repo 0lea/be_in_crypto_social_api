@@ -1,14 +1,19 @@
 use crate::{
+    RateLimitConfig,
     api::errors::ApiError,
-    domain::{errors::DomainError, external_validator::ExternalValidator, user::UserId},
+    domain::{
+        errors::DomainError, external_validator::ExternalValidator, rate_limit::RateLimiter,
+        user::UserId,
+    },
 };
 use axum::{
     body::Body,
-    extract::State,
-    http::{Request, header},
+    extract::{ConnectInfo, State},
+    http::{HeaderValue, Request, StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 use std::{sync::Arc, time::Instant};
 use tracing::{Instrument, info_span};
 use uuid::Uuid;
@@ -74,4 +79,47 @@ pub async fn tracing_middleware(request: Request<Body>, next: Next) -> Response 
     }
 
     response
+}
+
+fn extract_key(req: &Request<Body>) -> String {
+    if let Some(user_id) = req.extensions().get::<UserId>() {
+        return format!("rl:user:{}", user_id);
+    }
+    if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        return format!("rl:ip:{}", addr.ip());
+    }
+
+    "rl:unknown".to_string()
+}
+
+pub async fn rate_limit_layer(
+    State(cfg): State<RateLimitConfig>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let key = extract_key(&req);
+
+    match cfg.limiter.check_limit(&key, cfg.limit, cfg.window).await {
+        Ok(status) => {
+            let mut response = if !status.allowed {
+                (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response()
+            } else {
+                next.run(req).await
+            };
+
+            let headers = response.headers_mut();
+            headers.insert("X-RateLimit-Limit", HeaderValue::from(cfg.limit));
+            headers.insert("X-RateLimit-Remaining", HeaderValue::from(status.remaining));
+            headers.insert("X-RateLimit-Reset", HeaderValue::from(status.reset_after));
+
+            if !status.allowed {
+                headers.insert("Retry-After", HeaderValue::from(status.reset_after));
+            }
+            response
+        }
+        Err(e) => {
+            tracing::error!("Rate limiter error: {:?}", e);
+            next.run(req).await
+        }
+    }
 }

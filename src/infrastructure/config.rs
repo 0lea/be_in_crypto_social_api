@@ -13,6 +13,9 @@ pub struct Config {
     pub db_max_connections: u32,
     pub db_min_connections: u32,
     pub redis_pool_size: u32,
+    pub rate_limit_write_per_minute: u64,
+    pub rate_limit_read_per_minute: u64,
+    pub circuit_breaker_failure_threshold: u64,
 }
 
 impl Config {
@@ -59,6 +62,21 @@ impl Config {
             .parse()
             .unwrap();
 
+        let rate_limit_write_per_minute = std::env::var("RATE_LIMIT_WRITE_PER_MINUTE")
+            .unwrap_or_else(|_| "30".into())
+            .parse()
+            .expect("RATE_LIMIT_WRITE_PER_MINUTE must be u64");
+
+        let rate_limit_read_per_minute = std::env::var("RATE_LIMIT_READ_PER_MINUTE")
+            .unwrap_or_else(|_| "1000".into())
+            .parse()
+            .expect("RATE_LIMIT_READ_PER_MINUTE must be u64");
+
+        let circuit_breaker_failure_threshold = std::env::var("CIRCUIT_BREAKER_FAILURE_THRESHOLD")
+            .unwrap_or_else(|_| "1000".into())
+            .parse()
+            .expect("CIRCUIT_BREAKER_FAILURE_THRESHOLD must be u64");
+
         Self {
             read_database_url,
             database_url,
@@ -69,6 +87,9 @@ impl Config {
             db_max_connections,
             db_min_connections,
             redis_pool_size,
+            rate_limit_write_per_minute,
+            rate_limit_read_per_minute,
+            circuit_breaker_failure_threshold,
         }
     }
 }

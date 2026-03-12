@@ -42,6 +42,8 @@ async fn main() {
     ));
     let sse_manager = Arc::new(SseManager::new(cache_repo.clone()));
 
+    let rate_limiter = cache_repo.clone();
+
     let sse_worker = sse_manager.clone();
     tokio::spawn(async move {
         sse_worker.run_cache_event_listener().await;
@@ -54,16 +56,18 @@ async fn main() {
         sse_manager,
     ));
 
-    let app = create_app(like_service, extern_validator);
-
+    let app = create_app(like_service, extern_validator, rate_limiter, &config);
     let addr = format!("0.0.0.0:{}", config.http_port);
     println!("Server ready on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .unwrap();
 }
 
 async fn shutdown_signal() {
