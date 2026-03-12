@@ -84,6 +84,21 @@ pub async fn tracing_middleware(request: Request<Body>, next: Next) -> Response 
         tracing::info!(status = %status.as_u16(), latency_ms = %latency, "Request successful");
     }
 
+    metrics::counter!(
+        "social_api_http_requests_total",
+        "method" => method.to_string(),
+        "path" => uri.path().to_string(),
+        "status" => status.as_u16().to_string()
+    )
+    .increment(1);
+
+    metrics::histogram!(
+        "social_api_http_request_duration_seconds",
+        "method" => method.to_string(),
+        "path" => uri.path().to_string()
+    )
+    .record(latency as f64 / 1000.0);
+
     response
 }
 

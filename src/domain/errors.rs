@@ -14,7 +14,9 @@ pub enum DomainError {
     #[error("Missing, malformed, or invalid token")]
     Unauthorized,
 
-    #[error("Content item does not exist or has been removed")]
+    #[error(
+        "Content item does not exist or has been removed c_type:{content_type}, c_id:{content_id}"
+    )]
     ContentNotFound {
         content_type: String,
         content_id: String,

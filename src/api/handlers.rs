@@ -167,6 +167,7 @@ pub async fn sse_stream(
     let stream = async_stream::stream! {
         let mut heartbeat = interval(Duration::from_secs(15));
 
+
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
@@ -181,6 +182,23 @@ pub async fn sse_stream(
                     if let Ok(json) = serde_json::to_string(&hb) {
                         yield Ok(Event::default().data(json));
                     }
+                }
+
+                _ = service.cancellation_token.cancelled() => {
+                    let shutdown_ev = SseLikeEvent {
+                        event: SseEventType::Shutdown,
+                        user_id: None,
+                        count: None,
+                        content_type: None,
+                        content_id: None,
+                        timestamp: chrono::Utc::now()
+                    };
+
+                    if let Ok(json) = serde_json::to_string(&shutdown_ev) {
+                        yield Ok(Event::default().event("shutdown").data(json));
+                    }
+
+                    break;
                 }
 
                 msg = rx.recv() => {

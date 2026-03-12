@@ -2,6 +2,7 @@ use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use futures_util::lock::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -34,6 +35,7 @@ pub struct LikeService {
     extern_repo: Arc<dyn ExternalValidator>,
     pub sse_manager: Arc<SseManager>,
     flight_locks: DashMap<String, Arc<Mutex<()>>>,
+    pub cancellation_token: CancellationToken,
 }
 
 impl LikeService {
@@ -42,6 +44,7 @@ impl LikeService {
         cache_repo: Arc<dyn LikeCacheRepository>,
         extern_repo: Arc<dyn ExternalValidator>,
         sse_manager: Arc<SseManager>,
+        cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             db_repo,
@@ -49,6 +52,7 @@ impl LikeService {
             extern_repo,
             sse_manager,
             flight_locks: DashMap::with_capacity(100),
+            cancellation_token,
         }
     }
 

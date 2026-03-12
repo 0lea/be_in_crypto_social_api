@@ -187,10 +187,12 @@ pub struct StreamQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SseEventType {
     Like,
     Unlike,
     Heartbeat,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

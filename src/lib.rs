@@ -21,6 +21,7 @@ use axum::{
     middleware::{from_fn, from_fn_with_state},
     routing::{delete, get, post},
 };
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::sync::Arc;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
@@ -49,6 +50,8 @@ pub fn create_app(
         window: 60,
     };
 
+    let recorder_handle = PrometheusBuilder::new().install_recorder().unwrap();
+
     let public_routes = Router::new()
         .route("/likes/batch/counts", post(get_count_batch))
         .route("/likes/{content_type}/{content_id}/count", get(get_count))
@@ -75,6 +78,7 @@ pub fn create_app(
     Router::new()
         .nest("/health", health_routes)
         .nest("/v1", v1_routes)
+        .route("/metrics", get(|| async move { recorder_handle.render() }))
         .with_state(like_service)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(from_fn(tracing_middleware))

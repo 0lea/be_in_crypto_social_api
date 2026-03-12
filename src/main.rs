@@ -1,3 +1,4 @@
+use metrics_exporter_prometheus::PrometheusBuilder;
 use social_api::{
     application::{like_service::LikeService, sse::SseManager},
     create_app,
@@ -9,7 +10,8 @@ use social_api::{
     },
 };
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +36,7 @@ async fn main() {
     let redis_client =
         redis::Client::open(config.redis_url.clone()).expect("Failed to connect to Redis");
 
-    let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
+    let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool.clone())));
 
     let cache_repo = RedisLikeRepository::new(Arc::new(redis_client)).await;
 
@@ -43,20 +45,25 @@ async fn main() {
         config.profile_api_url.clone(),
         config.content_apis.clone(),
     ));
-    let sse_manager = Arc::new(SseManager::new(cache_repo_a.clone()));
 
     let rate_limiter = cache_repo_a.clone();
 
+    let shutdown_token = CancellationToken::new();
+
+    let sse_token = shutdown_token.clone();
+    let sse_manager = Arc::new(SseManager::new(cache_repo_a.clone(), sse_token));
     let sse_worker = sse_manager.clone();
     tokio::spawn(async move {
         sse_worker.run_cache_event_listener().await;
     });
 
+    let service_c_token = shutdown_token.clone();
     let like_service = Arc::new(LikeService::new(
         db_repo,
         cache_repo_a,
         extern_validator.clone(),
         sse_manager,
+        service_c_token,
     ));
 
     let app = create_app(like_service, extern_validator, rate_limiter, &config);
@@ -64,18 +71,45 @@ async fn main() {
     println!("Server ready on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
+    let pool_for_shutdown = pool.clone();
+    let token_for_shutdown = shutdown_token.clone();
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown_signal(pool_for_shutdown, token_for_shutdown))
     .await
     .unwrap();
 }
 
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
+async fn shutdown_signal(pool: sqlx::PgPool, token: CancellationToken) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => { println!("SIGINT received"); },
+        _ = terminate => { println!("SIGTERM received"); },
+    }
+
+    println!("Starting shutdown...");
+
+    token.cancel();
+
+    tokio::time::timeout(Duration::from_secs(2), pool.close())
         .await
-        .expect("Failed to install CTRL+C signal handler");
-    tracing::info!("Shutdown signal received, starting graceful shutdown...");
+        .ok();
+
+    println!("database pool closed");
 }
