@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
+use dashmap::DashSet;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -21,11 +22,17 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+enum RefreshType {
+    Count,
+    Leaderboard,
+}
+
 pub struct LikeService {
     db_repo: Arc<dyn LikeDbRepository>,
     cache_repo: Arc<dyn LikeCacheRepository>,
     extern_repo: Arc<dyn ExternalValidator>,
     pub sse_manager: Arc<SseManager>,
+    active_rehydrations: DashSet<String>,
 }
 
 impl LikeService {
@@ -40,6 +47,7 @@ impl LikeService {
             cache_repo,
             extern_repo,
             sse_manager,
+            active_rehydrations: DashSet::with_capacity(100),
         }
     }
 
@@ -274,7 +282,6 @@ impl LikeService {
             }
         }
 
-        // Hot Path quick
         if missing_items.is_empty() {
             return Ok(results);
         }
@@ -294,24 +301,37 @@ impl LikeService {
             })?;
 
         if !db_counts.is_empty() {
-            let cache_repo = self.cache_repo.clone();
-            let to_cache = db_counts.clone();
+            let mut to_rehydrate = Vec::with_capacity(db_counts.len());
+            let mut locked_keys = Vec::with_capacity(db_counts.len());
 
-            // fire-and-forget batch cache hydration
-            tokio::spawn(async move {
-                match cache_repo.set_counts_batch(to_cache).await {
-                    Err(e) => {
-                        tracing::warn!("Failed to refresh cache from DB: {:?}", e);
-                    }
-                    Ok(_) => {
-                        tracing::debug!("Batch cache refreshed successfully from DB");
-                    }
+            // filter key that are not already refreshed
+            for item in &db_counts {
+                let c_id = item.content_id;
+                let c_type = item.content_type.clone();
+
+                let lock_key = Self::format_lock_key(RefreshType::Leaderboard, &c_type, &c_id);
+
+                if self.active_rehydrations.insert(lock_key.clone()) {
+                    locked_keys.push(lock_key);
+                    to_rehydrate.push(item.clone());
                 }
-            });
+            }
+
+            if !to_rehydrate.is_empty() {
+                let cache_repo = self.cache_repo.clone();
+                let locks = self.active_rehydrations.clone();
+
+                tokio::spawn(async move {
+                    let _ = cache_repo.set_counts_batch(to_rehydrate).await;
+
+                    for key in locked_keys {
+                        locks.remove(&key);
+                    }
+                });
+            }
         }
 
         results.extend(db_counts);
-
         Ok(results)
     }
 
@@ -555,25 +575,44 @@ impl LikeService {
 
         self.hydratate_count_cache(c_type, c_id, count);
 
-        return Ok(count);
+        Ok(count)
     }
 
     /// fire & forget cache count hydratation
     fn hydratate_count_cache(&self, c_type: &ContentType, c_id: &ContentId, count: u64) {
-        let cache_repo_cl = self.cache_repo.clone();
-        let c_type = c_type.clone();
-        let c_id = c_id.clone();
-        tokio::spawn(async move {
-            tracing::debug!(
-                "try hydratation count cache from db for c_type:{} c_id:{} count:{}",
-                c_type,
-                c_id,
-                count
-            );
-            cache_repo_cl
-                .set_value(&c_type, &c_id, count)
-                .await
-                .map_err(|err| error!("Cache fail refresh count from db value: {:?}", err))
-        });
+        let lock_key = Self::format_lock_key(RefreshType::Count, c_type, c_id);
+
+        // ATOMIC CHECK & LOCK
+        if self.active_rehydrations.insert(lock_key.clone()) {
+            let cache = self.cache_repo.clone();
+            let locks = self.active_rehydrations.clone();
+            let c_type = c_type.clone();
+            let c_id = c_id.to_owned();
+
+            tokio::spawn(async move {
+                tracing::debug!(
+                    "try hydratation count cache from db for c_type:{} c_id:{} count:{}",
+                    c_type,
+                    c_id,
+                    count
+                );
+                if let Err(err) = cache.set_value(&c_type, &c_id, count).await {
+                    tracing::error!(
+                        "Failed to refresh cache for {}:{} from DB: {:?}",
+                        c_type.as_str(),
+                        c_id.0,
+                        err
+                    );
+                }
+                locks.remove(&lock_key);
+            });
+        }
+    }
+
+    fn format_lock_key(rtype: RefreshType, c_type: &ContentType, c_id: &ContentId) -> String {
+        match rtype {
+            RefreshType::Count => format!("lock:count:{}:{}", c_type.as_str(), c_id.0),
+            RefreshType::Leaderboard => format!("lock:leaderboard:{}", c_type.as_str()),
+        }
     }
 }
