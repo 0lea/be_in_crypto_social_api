@@ -33,21 +33,31 @@ impl LeadKeyType {
 
 pub struct RedisLikeRepository {
     client: Arc<Client>,
+    conn: MultiplexedConnection,
     config: Config,
 }
 
 impl RedisLikeRepository {
-    pub fn new(client: Arc<Client>) -> Self {
+    pub async fn new(client: Arc<Client>) -> Self {
         let config = Config::from_env();
-        Self { client, config }
-    }
-
-    async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
-        self.client
+        let conn = client
             .get_multiplexed_async_connection()
             .await
-            .map_err(|_| DomainError::CacheError("Redis down".into()))
+            .expect("Failed to connect to Redis");
+
+        Self {
+            client,
+            conn,
+            config,
+        }
     }
+
+    // async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
+    //     self.client
+    //         .get_multiplexed_async_connection()
+    //         .await
+    //         .map_err(|_| DomainError::CacheError("Redis down".into()))
+    // }
 
     fn get_ttl_for_key(&self, key: &str) -> i64 {
         // Estraiamo la parte prima del primo ":" (es. "count", "leaderboard", etc.)
@@ -86,7 +96,7 @@ impl RedisLikeRepository {
 #[async_trait]
 impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key);
@@ -102,7 +112,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     }
 
     async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key);
@@ -123,7 +133,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         c_id: &ContentId,
         value: u64,
     ) -> Result<(), DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key) as u64;
 
@@ -140,7 +150,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         c_type: &ContentType,
         c_id: &ContentId,
     ) -> Result<Option<u64>, DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         let key = self.format_count_key(c_type, c_id);
 
         conn.get(key)
@@ -155,7 +165,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         if items.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         let keys: Vec<String> = items
             .iter()
@@ -190,7 +200,7 @@ impl LikeCacheRepository for RedisLikeRepository {
             pipe.set_ex(key, i.count, 3600);
         }
 
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         pipe.query_async::<()>(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
@@ -203,7 +213,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         window: &str,
         c_type: &ContentType,
     ) -> Result<(Option<Vec<TopLikeItem>>, bool), DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
         let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
@@ -230,7 +240,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         items: &[TopLikeItem],
         canary_ttl: u64,
     ) -> Result<(), DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
         let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
@@ -253,7 +263,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         window: &str,
         c_type: &ContentType,
     ) -> Result<bool, DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
         let lock_key = self.format_lead_key(LeadKeyType::Lock, window, c_type);
 
         let acquired: Option<String> = redis::cmd("SET")
@@ -270,7 +280,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     }
 
     async fn health_check(&self) -> Result<(), DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         conn.ping::<()>()
             .await
@@ -282,7 +292,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     // SSE
 
     async fn publish_like_event(&self, event: &SseLikeEvent) -> Result<(), DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         let c_type = event.content_type.clone().ok_or(DomainError::SseKeyError)?;
         let c_id = event.content_id.ok_or(DomainError::SseKeyError)?;
@@ -303,19 +313,19 @@ impl LikeCacheRepository for RedisLikeRepository {
     }
 
     async fn get_async_pubsub_stream(&self) -> Result<BoxStream<'static, String>, DomainError> {
-        let mut pubsub = self
+        let mut pupsub = self
             .client
             .get_async_pubsub()
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
         let all_chan_key = self.format_all_channels_key();
-        pubsub
+        pupsub
             .psubscribe(all_chan_key)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        let stream = pubsub
+        let stream = pupsub
             .into_on_message()
             .map(|msg| msg.get_payload::<String>().unwrap_or_default());
 
@@ -331,7 +341,7 @@ impl RateLimiter for RedisLikeRepository {
         limit: u64,
         window_secs: u64,
     ) -> Result<RateLimitStatus, DomainError> {
-        let mut conn = self.get_conn().await?;
+        let mut conn = self.conn.clone();
 
         let script = redis::Script::new(include_str!("./rate_limit.lua"));
 
