@@ -48,7 +48,7 @@ impl CircuitBreaker {
 
     pub fn check_state(&self) -> State {
         let old_state_raw = self.state.load(Ordering::SeqCst);
-        let old_state = State::from(old_state_raw); // Helper pe
+        let old_state = State::from(old_state_raw);
         let last_error = self.last_failure_time.load(Ordering::SeqCst);
         let now = chrono::Utc::now().timestamp();
 

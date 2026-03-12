@@ -16,6 +16,7 @@ use social_api::{
     },
 };
 use sqlx::PgPool;
+use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{header, method, path},
@@ -45,22 +46,24 @@ pub async fn setup_test_context(
     config
         .content_apis
         .insert("bonus_hunter".to_string(), mock_server.uri());
-    config.rate_limit_write_per_minute = 10000; // Rilassato di default
+    config.rate_limit_write_per_minute = 10000;
 
     config.redis_url = std::env::var("REDIS_TEST_URL").unwrap_or("redis://127.0.0.1:6379/2".into());
     // Applichiamo le modifiche specifiche del test (es. per testare il rate limit)
     config_override(&mut config);
 
     let redis_client = redis::Client::open(config.redis_url.clone()).unwrap();
-    let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
+    let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)).await);
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
 
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
         config.profile_api_url.clone(),
         config.content_apis.clone(),
+        cache_repo.clone(),
     ));
 
-    let sse_manager = Arc::new(SseManager::new(cache_repo.clone()));
+    let c_token = CancellationToken::new();
+    let sse_manager = Arc::new(SseManager::new(cache_repo.clone(), c_token.clone()));
 
     let sse_worker = sse_manager.clone();
     tokio::spawn(async move {
@@ -71,9 +74,16 @@ pub async fn setup_test_context(
         cache_repo.clone(),
         extern_validator.clone(),
         sse_manager,
+        c_token.clone(),
     ));
 
-    let app = create_app(like_service, extern_validator, cache_repo.clone(), &config);
+    let app = create_app(
+        like_service,
+        extern_validator,
+        cache_repo.clone(),
+        &config,
+        c_token,
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

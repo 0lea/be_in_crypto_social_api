@@ -21,9 +21,14 @@ use axum::{
     middleware::{from_fn, from_fn_with_state},
     routing::{delete, get, post},
 };
-use metrics_exporter_prometheus::PrometheusBuilder;
-use std::sync::Arc;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::sync::{Arc, OnceLock};
+use tokio_util::sync::CancellationToken;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+
+// global static var soince Prometheus is a process singleton an multiple call to it will fail
+// (es. tests..)
+static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct RateLimitConfig {
@@ -37,6 +42,7 @@ pub fn create_app(
     extern_validator: Arc<dyn ExternalValidator>,
     rate_limiter: Arc<dyn RateLimiter>,
     config: &Config,
+    c_token: CancellationToken,
 ) -> axum::Router {
     let read_limit = RateLimitConfig {
         limiter: rate_limiter.clone(),
@@ -50,14 +56,34 @@ pub fn create_app(
         window: 60,
     };
 
-    let recorder_handle = PrometheusBuilder::new().install_recorder().unwrap();
+    let recorder_handle = METRICS_HANDLE.get_or_init(|| {
+        PrometheusBuilder::new()
+            .install_recorder()
+            .expect("failed to install prometheus recorder")
+    });
+    let metrics_handle = recorder_handle.clone();
+
+    let metrics_cleaner = recorder_handle.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+
+        loop {
+            tokio::select! {
+                _ = c_token.cancelled() => {
+                    break
+                }
+                _ = interval.tick() => {
+                    metrics_cleaner.run_upkeep();
+                }
+            }
+        }
+    });
 
     let public_routes = Router::new()
         .route("/likes/batch/counts", post(get_count_batch))
         .route("/likes/{content_type}/{content_id}/count", get(get_count))
         .route("/likes/top", get(get_top_likes))
         .route("/likes/stream", get(sse_stream))
-        // Applichiamo il limite READ qui
         .layer(from_fn_with_state(read_limit, rate_limit_layer));
 
     let protected_routes = Router::new()
@@ -78,7 +104,10 @@ pub fn create_app(
     Router::new()
         .nest("/health", health_routes)
         .nest("/v1", v1_routes)
-        .route("/metrics", get(|| async move { recorder_handle.render() }))
+        .route(
+            "/metrics",
+            get(|| async move { metrics_handle.clone().render() }),
+        )
         .with_state(like_service)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(from_fn(tracing_middleware))

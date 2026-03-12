@@ -1,4 +1,3 @@
-use metrics_exporter_prometheus::PrometheusBuilder;
 use social_api::{
     application::{like_service::LikeService, sse::SseManager},
     create_app,
@@ -15,12 +14,10 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
-    // 1. Caricamento fail-fast della config
     let config = Config::from_env();
 
     init_observability();
 
-    // 2. Inizializzazione Pool connessioni usando i valori della config
     let pool = PgPoolOptions::new()
         .max_connections(config.db_max_connections)
         .min_connections(config.db_min_connections)
@@ -37,13 +34,13 @@ async fn main() {
         redis::Client::open(config.redis_url.clone()).expect("Failed to connect to Redis");
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool.clone())));
-
     let cache_repo = RedisLikeRepository::new(Arc::new(redis_client)).await;
-
     let cache_repo_a = Arc::new(cache_repo);
+
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
         config.profile_api_url.clone(),
         config.content_apis.clone(),
+        cache_repo_a.clone(),
     ));
 
     let rate_limiter = cache_repo_a.clone();
@@ -66,7 +63,13 @@ async fn main() {
         service_c_token,
     ));
 
-    let app = create_app(like_service, extern_validator, rate_limiter, &config);
+    let app = create_app(
+        like_service,
+        extern_validator,
+        rate_limiter,
+        &config,
+        shutdown_token.clone(),
+    );
     let addr = format!("0.0.0.0:{}", config.http_port);
     println!("Server ready on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

@@ -137,12 +137,6 @@ impl LikeDbRepository for PostgresLikeRepository {
             DomainError::DatabaseError(format!("Error on get like count query {:?}", e))
         })?;
 
-        // if count.unwrap_or_default() == 0 {
-        //     return Err(DomainError::DatabaseNotFound(
-        //         "Error on get like count query, like not fond".to_string(),
-        //     ));
-        // }
-
         Ok(count.unwrap_or_default() as u64)
     }
     //TODO: use materialized table
@@ -156,8 +150,6 @@ impl LikeDbRepository for PostgresLikeRepository {
     //     .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
     //     Ok(count as u64)
     // }
-    //
-    //
 
     async fn get_counts_batch(
         &self,
@@ -186,7 +178,7 @@ impl LikeDbRepository for PostgresLikeRepository {
             &types,
             &ids
         )
-        .fetch_all(&*self.pool) // self.pool è l'Arc<PgPool>
+        .fetch_all(&*self.pool)
         .await
         .map_err(|e| DomainError::DatabaseError(e.to_string()))?;
 
@@ -237,7 +229,6 @@ impl LikeDbRepository for PostgresLikeRepository {
         since: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<TopLikeItem>, DomainError> {
-        // Usiamo una query che sfrutta l'indice temporale
         let items = sqlx::query_as!(
             TopLikeItem,
             r#"

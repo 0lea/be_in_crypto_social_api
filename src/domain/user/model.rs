@@ -22,4 +22,3 @@ pub struct User {
     pub user_id: UserId,
     pub display_name: String,
 }
-// "valid": true,
