@@ -35,14 +35,17 @@ async fn main() {
         redis::Client::open(config.redis_url.clone()).expect("Failed to connect to Redis");
 
     let db_repo = Arc::new(PostgresLikeRepository::new(Arc::new(pool)));
-    let cache_repo = Arc::new(RedisLikeRepository::new(Arc::new(redis_client)));
+
+    let cache_repo = RedisLikeRepository::new(Arc::new(redis_client)).await;
+
+    let cache_repo_a = Arc::new(cache_repo);
     let extern_validator: Arc<dyn ExternalValidator> = Arc::new(HttpExternalValidator::new(
         config.profile_api_url.clone(),
         config.content_apis.clone(),
     ));
-    let sse_manager = Arc::new(SseManager::new(cache_repo.clone()));
+    let sse_manager = Arc::new(SseManager::new(cache_repo_a.clone()));
 
-    let rate_limiter = cache_repo.clone();
+    let rate_limiter = cache_repo_a.clone();
 
     let sse_worker = sse_manager.clone();
     tokio::spawn(async move {
@@ -51,7 +54,7 @@ async fn main() {
 
     let like_service = Arc::new(LikeService::new(
         db_repo,
-        cache_repo,
+        cache_repo_a,
         extern_validator.clone(),
         sse_manager,
     ));
