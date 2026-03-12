@@ -118,5 +118,9 @@ pub trait LikeCacheRepository: Send + Sync {
 
     async fn publish_like_event(&self, event: &SseLikeEvent) -> Result<(), DomainError>;
 
+    // external validation
+    async fn get_string(&self, key: &str) -> Result<Option<String>, DomainError>;
+    async fn set_string(&self, key: &str, value: &str, ttl: u64) -> Result<(), DomainError>;
+
     async fn health_check(&self) -> Result<(), DomainError>;
 }

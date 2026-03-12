@@ -157,8 +157,7 @@ impl LikeService {
             .remove(user_id, content_type, content_id)
             .await?;
 
-        // get count in cache, fallback DB, if fail we are unable to return consistent count,
-        // return err
+        // get count in cache, fallback DB, if fail we are unable to return consistent count, return err
         let mut curr_count = self
             .get_like_count_with_fallback(content_type, content_id)
             .await?;
@@ -254,7 +253,6 @@ impl LikeService {
             return Err(DomainError::BatchTooLarge(items.len()));
         }
 
-        // 1. TENTATIVO CACHE (Veloce)
         let cached_counts = self
             .cache_repo
             .get_counts_batch(&items)
@@ -280,11 +278,6 @@ impl LikeService {
             return Ok(results);
         }
 
-        // 2. GESTIONE LOCK (Singleflight)
-        // Usiamo il DashSet (active_rehydrations) che abbiamo discusso prima,
-        // perché qui non vogliamo far aspettare gli altri utenti,
-        // vogliamo solo che uno solo faccia il lavoro sporco.
-
         let mut to_fetch_from_db = Vec::new();
         let mut locked_keys = Vec::new();
 
@@ -292,7 +285,6 @@ impl LikeService {
             let lock_key =
                 Self::format_lock_key(RefreshType::Count, &item.content_type, &item.content_id);
 
-            // Se riusciamo a inserire nel DashSet, siamo gli "eletti" per quel recupero
             if self
                 .flight_locks
                 .insert(lock_key.clone(), Arc::new(Mutex::new(())))
@@ -303,14 +295,11 @@ impl LikeService {
             }
         }
 
-        // 3. FALLBACK DB
         if !to_fetch_from_db.is_empty() {
             let db_counts = self.db_repo.get_counts_batch(&to_fetch_from_db).await?;
 
-            // Aggiungiamo i risultati del DB a quelli da restituire
             results.extend(db_counts.clone());
 
-            // 4. IDRATAZIONE FIRE-AND-FORGET
             let cache_repo = self.cache_repo.clone();
             let rehydration_set = self.flight_locks.clone();
 
@@ -325,106 +314,7 @@ impl LikeService {
 
         Ok(results)
     }
-    /// As this is a performance-critical hot path, allocations and clones are strictly avoided
-    /// except for the mandatory database fallback scenario.
-    /// Implements a non-blocking "fire-and-forget" strategy for cache hydration.
-    // pub async fn get_likes_count_batch(
-    //     &self,
-    //     items: Vec<ContentItem>,
-    // ) -> Result<Vec<ContentCount>, DomainError> {
-    //     // cache read
-    //     let cached_counts = match self.cache_repo.get_counts_batch(&items).await {
-    //         Ok(counts) => counts,
-    //         Err(e) => {
-    //             tracing::warn!(
-    //                 "Cache failure during batch get, treating as full miss: {:?}",
-    //                 e
-    //             );
-    //             HashMap::new()
-    //         }
-    //     };
-    //
-    //     let mut results = Vec::with_capacity(items.len());
-    //     let mut missing_items = Vec::new();
-    //
-    //     // divide founded item from missing
-    //     for item in items {
-    //         if let Some(&count) = cached_counts.get(&item.content_id) {
-    //             // CACHE HIT
-    //             results.push(ContentCount {
-    //                 content_id: item.content_id,
-    //                 content_type: item.content_type, // Zero-clone: spostiamo la proprietà
-    //                 count,
-    //             });
-    //         } else {
-    //             // CACHE MISS
-    //             missing_items.push(item);
-    //         }
-    //     }
-    //
-    //     if missing_items.is_empty() {
-    //         return Ok(results);
-    //     }
-    //
-    //     tracing::info!(
-    //         "Batch counts: {} cache hits, {} misses. Falling back to DB for misses.",
-    //         results.len(),
-    //         missing_items.len()
-    //     );
-    //
-    //     let db_counts = self
-    //         .db_repo
-    //         .get_counts_batch(&missing_items)
-    //         .await
-    //         .inspect_err(|_| {
-    //             tracing::error!("Critical: Db fallback failure on batch counts");
-    //         })?;
-    //
-    //     if !db_counts.is_empty() {
-    //         let mut to_rehydrate = Vec::with_capacity(db_counts.len());
-    //         let mut locked_keys = Vec::with_capacity(db_counts.len());
-    //
-    //         // filter key that are not already refreshed
-    //         for item in &db_counts {
-    //             let c_id = item.content_id;
-    //             let c_type = item.content_type.clone();
-    //
-    //             let lock_key = Self::format_lock_key(RefreshType::Leaderboard, &c_type, &c_id);
-    //             let lock = self
-    //                 .flight_locks
-    //                 .entry(lock_key.clone())
-    //                 .or_insert_with(|| Arc::new(Mutex::new(())))
-    //                 .clone();
-    //
-    //             if lock.try_lock().is_none() {
-    //                 continue;
-    //             }
-    //
-    //             let _guard = lock.lock().await;
-    //
-    //             locked_keys.push(lock_key);
-    //             to_rehydrate.push(item.clone());
-    //         }
-    //
-    //         if !to_rehydrate.is_empty() {
-    //             let cache_repo = self.cache_repo.clone();
-    //             let locks = self.flight_locks.clone();
-    //             tracing::warn!("Cache miss for batch request, fetching from DB");
-    //
-    //             tokio::spawn(async move {
-    //                 let _ = cache_repo.set_counts_batch(to_rehydrate).await;
-    //
-    //                 for key in locked_keys {
-    //                     locks.remove(&key);
-    //                 }
-    //             });
-    //         }
-    //     }
-    //
-    //     results.extend(db_counts);
-    //     Ok(results)
-    // }
-    //
+
     // since there is a limit of 100 pair, i choose to calc the delta between db_resp | request
     // in app layer insted of a join on the db to reduce the db load
     pub async fn get_batch_status(
@@ -527,9 +417,7 @@ impl LikeService {
             .unwrap_or((None, false));
 
         if let Some(items) = cached_data {
-            // 2. Se i dati sono vecchi (Canary morto)
             if !is_fresh {
-                // PROVIAMO A PRENDERE IL LOCK
                 if self
                     .cache_repo
                     .acquire_refresh_lock(&window_str, &content_type)
@@ -603,8 +491,6 @@ impl LikeService {
         Ok(())
     }
 
-    // private methods
-
     /// send fire-and-forget SSE event
     fn send_sse_event(
         &self,
@@ -645,28 +531,6 @@ impl LikeService {
         Ok(count)
     }
 
-    // async fn get_like_count_with_fallback(
-    //     &self,
-    //     c_type: &ContentType,
-    //     c_id: &ContentId,
-    // ) -> Result<u64, DomainError> {
-    //     let cache_res = self.get_cache_like_count(c_type, c_id).await;
-    //
-    //     if let Ok(count) = cache_res {
-    //         // carche was hot, returning
-    //         return Ok(count);
-    //     }
-    //
-    //     tracing::warn!("Cache get like count failure, fallback on DB");
-    //
-    //     // if db fail as well return error
-    //     let count = self.db_repo.get_likes_count(c_type, c_id).await?;
-    //
-    //     self.hydratate_count_cache(c_type, c_id, count);
-    //
-    //     Ok(count)
-    // }
-
     /// this method fail if cache & DB fail, otherwise return count
     async fn get_like_count_with_fallback(
         &self,
@@ -703,37 +567,6 @@ impl LikeService {
         self.flight_locks.remove(&lock_key);
         Ok(count)
     }
-
-    /// /// fire & forget cache count hydratation
-    /// fn hydratate_count_cache(&self, c_type: &ContentType, c_id: &ContentId, count: u64) {
-    ///     let lock_key = Self::format_lock_key(RefreshType::Count, c_type, c_id);
-    ///
-    ///     // ATOMIC CHECK & LOCK
-    ///     if self.active_rehydrations.insert(lock_key.clone()) {
-    ///         let cache = self.cache_repo.clone();
-    ///         let locks = self.active_rehydrations.clone();
-    ///         let c_type = c_type.clone();
-    ///         let c_id = c_id.to_owned();
-    ///
-    ///         tokio::spawn(async move {
-    ///             tracing::debug!(
-    ///                 "try hydratation count cache from db for c_type:{} c_id:{} count:{}",
-    ///                 c_type,
-    ///                 c_id,
-    ///                 count
-    ///             );
-    ///             if let Err(err) = cache.set_value(&c_type, &c_id, count).await {
-    ///                 tracing::error!(
-    ///                     "Failed to refresh cache for {}:{} from DB: {:?}",
-    ///                     c_type.as_str(),
-    ///                     c_id.0,
-    ///                     err
-    ///                 );
-    ///             }
-    ///             locks.remove(&lock_key);
-    ///         });
-    ///     }
-    /// }
 
     fn format_lock_key(rtype: RefreshType, c_type: &ContentType, c_id: &ContentId) -> String {
         match rtype {

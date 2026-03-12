@@ -37,8 +37,6 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "RATE_LIMITED",
                 Some(json!({ "retry_after": retry_after })),
-                // TODO:
-                // NOTA: Il middleware di rate limiting dovrebbe iniettare l'header `Retry-After`
             ),
             DomainError::DependencyUnavailable { .. } => (
                 StatusCode::SERVICE_UNAVAILABLE,

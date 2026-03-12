@@ -70,6 +70,9 @@ pub enum DomainError {
     #[error("Cache healt error : {0}")]
     CacheHealthError(String),
 
+    #[error("Cache offline")]
+    CacheOffline,
+
     #[error("Try to pubblish sse event on uknown item")]
     SseKeyError,
 }

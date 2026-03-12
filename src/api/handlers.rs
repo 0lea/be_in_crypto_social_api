@@ -128,17 +128,6 @@ pub async fn get_user_likes(
 
     Ok(Json(response))
 }
-// pub async fn get_like_count(
-//     State(service): State<Arc<LikeService>>,
-//     Path((c_type, c_id)): Path<(ContentType, ContentId)>,
-// ) -> Result<impl IntoResponse, ApiError> {
-//
-//     // Semplice, pulito, e l'ID è già pronto
-//     let res = service.get_like_count(&c_type, &c_id).await
-//         .map_err(|e| ApiError(e, ctx.id))?;
-//
-//     Ok(Json(res))
-// }
 
 #[tracing::instrument(skip(service))]
 pub async fn get_top_likes(

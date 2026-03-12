@@ -33,17 +33,14 @@ impl LeadKeyType {
 
 pub struct RedisLikeRepository {
     client: Arc<Client>,
-    conn: MultiplexedConnection,
+    conn: Option<MultiplexedConnection>,
     config: Config,
 }
 
 impl RedisLikeRepository {
     pub async fn new(client: Arc<Client>) -> Self {
         let config = Config::from_env();
-        let conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Failed to connect to Redis");
+        let conn = client.get_multiplexed_async_connection().await.ok();
 
         Self {
             client,
@@ -52,22 +49,13 @@ impl RedisLikeRepository {
         }
     }
 
-    // async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
-    //     self.client
-    //         .get_multiplexed_async_connection()
-    //         .await
-    //         .map_err(|_| DomainError::CacheError("Redis down".into()))
-    // }
-
     fn get_ttl_for_key(&self, key: &str) -> i64 {
-        // Estraiamo la parte prima del primo ":" (es. "count", "leaderboard", etc.)
         let prefix = key.split(':').next().unwrap_or("");
 
         match prefix {
             "count" => self.config.cache_ttl_like_counts_secs,
             "leaderboard" => self.config.cache_ttl_like_counts_secs,
             "validation" => self.config.cache_ttl_content_validation_secs,
-            // "user_status" => self.config.cache_ttl_user_status_secs,
             _ => 300,
         }
     }
@@ -96,12 +84,12 @@ impl RedisLikeRepository {
 #[async_trait]
 impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key);
 
-        let count: u64 = pipe
+        let (count, _): (u64, u64) = pipe
             .incr(&count_key, 1)
             .expire(count_key, ttl)
             .query_async(&mut conn)
@@ -112,12 +100,12 @@ impl LikeCacheRepository for RedisLikeRepository {
     }
 
     async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key);
 
-        let count: u64 = pipe
+        let (count, _): (u64, u64) = pipe
             .decr(&count_key, 1)
             .expire(count_key, ttl)
             .query_async(&mut conn)
@@ -133,7 +121,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         c_id: &ContentId,
         value: u64,
     ) -> Result<(), DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         let count_key = self.format_count_key(c_type, c_id);
         let ttl = self.get_ttl_for_key(&count_key) as u64;
 
@@ -150,7 +138,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         c_type: &ContentType,
         c_id: &ContentId,
     ) -> Result<Option<u64>, DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         let key = self.format_count_key(c_type, c_id);
 
         conn.get(key)
@@ -165,7 +153,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         if items.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         let keys: Vec<String> = items
             .iter()
@@ -200,7 +188,7 @@ impl LikeCacheRepository for RedisLikeRepository {
             pipe.set_ex(key, i.count, 3600);
         }
 
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         pipe.query_async::<()>(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
@@ -213,7 +201,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         window: &str,
         c_type: &ContentType,
     ) -> Result<(Option<Vec<TopLikeItem>>, bool), DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
         let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
@@ -240,7 +228,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         items: &[TopLikeItem],
         canary_ttl: u64,
     ) -> Result<(), DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         let data_key = self.format_lead_key(LeadKeyType::Data, window, c_type);
         let canary_key = self.format_lead_key(LeadKeyType::Canary, window, c_type);
@@ -263,7 +251,7 @@ impl LikeCacheRepository for RedisLikeRepository {
         window: &str,
         c_type: &ContentType,
     ) -> Result<bool, DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
         let lock_key = self.format_lead_key(LeadKeyType::Lock, window, c_type);
 
         let acquired: Option<String> = redis::cmd("SET")
@@ -276,11 +264,11 @@ impl LikeCacheRepository for RedisLikeRepository {
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        Ok(acquired.is_some()) // Ritorna true se abbiamo preso il lock
+        Ok(acquired.is_some())
     }
 
     async fn health_check(&self) -> Result<(), DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         conn.ping::<()>()
             .await
@@ -292,7 +280,7 @@ impl LikeCacheRepository for RedisLikeRepository {
     // SSE
 
     async fn publish_like_event(&self, event: &SseLikeEvent) -> Result<(), DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         let c_type = event.content_type.clone().ok_or(DomainError::SseKeyError)?;
         let c_id = event.content_id.ok_or(DomainError::SseKeyError)?;
@@ -331,6 +319,24 @@ impl LikeCacheRepository for RedisLikeRepository {
 
         Ok(stream.boxed())
     }
+
+    async fn get_string(&self, key: &str) -> Result<Option<String>, DomainError> {
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
+        let val: Option<String> = conn
+            .get(key)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+        Ok(val)
+    }
+
+    async fn set_string(&self, key: &str, value: &str, ttl: u64) -> Result<(), DomainError> {
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
+        let _: () = conn
+            .set_ex(key, value, ttl)
+            .await
+            .map_err(|e| DomainError::CacheError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -341,7 +347,7 @@ impl RateLimiter for RedisLikeRepository {
         limit: u64,
         window_secs: u64,
     ) -> Result<RateLimitStatus, DomainError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn.clone().ok_or(DomainError::CacheOffline)?;
 
         let script = redis::Script::new(include_str!("./rate_limit.lua"));
 
@@ -361,7 +367,7 @@ impl RateLimiter for RedisLikeRepository {
             .arg(limit) // ARGV[1]
             .arg(fill_rate) // ARGV[2]
             .arg(now) // ARGV[3]
-            .arg(1) // ARGV[4] (costo singola chiamata)
+            .arg(1) // ARGV[4]
             .invoke_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
