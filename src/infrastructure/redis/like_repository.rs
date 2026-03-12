@@ -5,10 +5,10 @@ use crate::{
         like::{ContentId, ContentType, LikeCacheRepository},
         rate_limit::{RateLimitStatus, RateLimiter},
     },
+    infrastructure::config::Config,
 };
-use futures_util::StreamExt;
-
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use std::{collections::HashMap, sync::Arc};
@@ -30,15 +30,37 @@ impl LeadKeyType {
         }
     }
 }
+
 pub struct RedisLikeRepository {
     client: Arc<Client>,
+    config: Config,
 }
 
 impl RedisLikeRepository {
     pub fn new(client: Arc<Client>) -> Self {
-        Self { client }
+        let config = Config::from_env();
+        Self { client, config }
     }
 
+    async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
+        self.client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|_| DomainError::CacheError("Redis down".into()))
+    }
+
+    fn get_ttl_for_key(&self, key: &str) -> i64 {
+        // Estraiamo la parte prima del primo ":" (es. "count", "leaderboard", etc.)
+        let prefix = key.split(':').next().unwrap_or("");
+
+        match prefix {
+            "count" => self.config.cache_ttl_like_counts_secs,
+            "leaderboard" => self.config.cache_ttl_like_counts_secs,
+            "validation" => self.config.cache_ttl_content_validation_secs,
+            // "user_status" => self.config.cache_ttl_user_status_secs,
+            _ => 300,
+        }
+    }
     fn format_count_key(&self, c_type: &ContentType, c_id: &ContentId) -> String {
         format!("count:{}:{}", c_type.as_str(), c_id.0)
     }
@@ -59,24 +81,20 @@ impl RedisLikeRepository {
             c_type.as_str()
         )
     }
-
-    async fn get_conn(&self) -> Result<MultiplexedConnection, DomainError> {
-        self.client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|_| DomainError::CacheError("Redis down".into()))
-    }
 }
 
 #[async_trait]
 impl LikeCacheRepository for RedisLikeRepository {
     async fn increment(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
-
+        let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
+        let ttl = self.get_ttl_for_key(&count_key);
 
-        let count: u64 = conn
-            .incr(count_key, 1)
+        let count: u64 = pipe
+            .incr(&count_key, 1)
+            .expire(count_key, ttl)
+            .query_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -85,14 +103,18 @@ impl LikeCacheRepository for RedisLikeRepository {
 
     async fn decrement(&self, c_type: &ContentType, c_id: &ContentId) -> Result<u64, DomainError> {
         let mut conn = self.get_conn().await?;
-
+        let mut pipe = redis::pipe();
         let count_key = self.format_count_key(c_type, c_id);
-        let count: i64 = conn
-            .decr(count_key, 1)
+        let ttl = self.get_ttl_for_key(&count_key);
+
+        let count: u64 = pipe
+            .decr(&count_key, 1)
+            .expire(count_key, ttl)
+            .query_async(&mut conn)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
-        Ok(count.max(0) as u64)
+        Ok(count)
     }
 
     async fn set_value(
@@ -103,8 +125,10 @@ impl LikeCacheRepository for RedisLikeRepository {
     ) -> Result<(), DomainError> {
         let mut conn = self.get_conn().await?;
         let count_key = self.format_count_key(c_type, c_id);
+        let ttl = self.get_ttl_for_key(&count_key) as u64;
+
         let _: () = conn
-            .set(count_key, value)
+            .set_ex(count_key, value, ttl)
             .await
             .map_err(|e| DomainError::CacheError(e.to_string()))?;
 
@@ -213,7 +237,6 @@ impl LikeCacheRepository for RedisLikeRepository {
 
         let json_str = serde_json::to_string(items).unwrap_or_default();
 
-        // Aggiorniamo i dati (senza TTL o TTL lungo) e resettiamo il canary
         let mut pipe = redis::pipe();
         pipe.set(&data_key, json_str)
             .set_ex(&canary_key, "alive", canary_ttl);
