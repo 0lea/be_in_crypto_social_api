@@ -5,13 +5,14 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, http::StatusCode};
 use serde_json::json;
 
-pub struct ApiError(pub DomainError);
+pub struct ApiError(pub DomainError, pub String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        tracing::error!(domain_error = %self.0, "Private ERROR");
+        let (domain_error, request_id) = (&self.0, &self.1);
+        tracing::error!(domain_error = %domain_error, request_id = %request_id );
 
-        let (status, code, details) = match &self.0 {
+        let (status, code, details) = match domain_error {
             DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", None),
             DomainError::ContentNotFound {
                 content_type,
@@ -50,18 +51,12 @@ impl IntoResponse for ApiError {
         let body = Json(ErrorResponse {
             error: ErrorDetail {
                 code: code.to_string(),
-                message: self.0.to_string(),
-                request_id: "TODO_extract_from_extensions".to_string(),
+                message: domain_error.to_string(),
+                request_id: request_id.to_string(),
                 details,
             },
         });
 
         (status, body).into_response()
-    }
-}
-
-impl From<DomainError> for ApiError {
-    fn from(err: DomainError) -> Self {
-        Self(err)
     }
 }

@@ -1151,7 +1151,7 @@ async fn test_redis_failure_fallback(pool: PgPool) {
 #[test_log::test]
 async fn test_circuit_breaker_flow(pool: PgPool) {
     let ctx = setup_test_context(pool, |cfg| {
-        cfg.circuit_breaker_failure_threshold = 2;
+        cfg.cb_failure_threshold = 2;
     })
     .await;
     let server = TestServer::new(ctx.router);

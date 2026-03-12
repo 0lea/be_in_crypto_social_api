@@ -2,7 +2,10 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::{api::errors::ApiError, application::like_service::LikeService};
+use crate::{
+    api::{errors::ApiError, request_id::ReqCtx},
+    application::like_service::LikeService,
+};
 
 pub fn healt_router() -> Router<Arc<LikeService>> {
     Router::new()
@@ -16,7 +19,12 @@ async fn liveness() -> impl IntoResponse {
 
 pub async fn readiness(
     State(service): State<Arc<LikeService>>,
+    ctx: ReqCtx,
 ) -> Result<impl IntoResponse, ApiError> {
-    service.full_health_check().await?;
+    service
+        .full_health_check()
+        .await
+        .map_err(|e| ApiError(e, ctx.id))?;
+
     Ok(())
 }

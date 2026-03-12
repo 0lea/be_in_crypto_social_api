@@ -1,6 +1,6 @@
 use crate::{
     RateLimitConfig,
-    api::errors::ApiError,
+    api::{errors::ApiError, request_id::ReqCtx},
     domain::{
         errors::DomainError, external_validator::ExternalValidator, rate_limit::RateLimiter,
         user::UserId,
@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 pub async fn auth_middleware(
     State(validator): State<Arc<dyn ExternalValidator>>,
+    ctx: ReqCtx,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
@@ -27,17 +28,22 @@ pub async fn auth_middleware(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        .ok_or(DomainError::Unauthorized)?;
+        .ok_or(DomainError::Unauthorized)
+        .map_err(|e| ApiError(e, ctx.id.clone()))?;
 
     if !auth_header.starts_with("Bearer ") {
-        return Err(DomainError::Unauthorized.into());
+        return Err(ApiError(DomainError::Unauthorized, ctx.id));
     }
 
     let raw_token = &auth_header[7..];
-    let token = Uuid::parse_str(raw_token).map_err(|_| DomainError::Unauthorized)?;
+    let token = Uuid::parse_str(raw_token)
+        .map_err(|_| ApiError(DomainError::Unauthorized, ctx.id.clone()))?;
 
     let mut user_id = UserId(token);
-    user_id.0 = validator.validate_user(&user_id).await?;
+    user_id.0 = validator
+        .validate_user(&user_id)
+        .await
+        .map_err(|e| ApiError(e, ctx.id.clone()))?;
 
     req.extensions_mut().insert(user_id);
 
