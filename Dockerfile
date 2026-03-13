@@ -5,6 +5,6 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/mock-service /usr/local/bin/mock-service
+COPY --from=builder /app/target/release/social_api /usr/local/bin/social_api
 USER 1000
 CMD ["social_api"]
