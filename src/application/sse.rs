@@ -110,8 +110,11 @@ impl SseManager {
             return;
         };
 
-        if tx.send(event).is_err() {
-            // no client connected to this channle, deleting it
+        if tx.send(event).is_err() && tx.receiver_count() == 0 {
+            tracing::info!(
+                "SseManager: removing chan {} as it has 0 subscribers",
+                chan_key
+            );
             self.channels.remove(&chan_key);
         }
     }

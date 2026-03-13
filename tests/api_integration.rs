@@ -994,7 +994,7 @@ async fn test_sse_unlike_broadcast(pool: PgPool) {
         base_url, content_id
     );
     let mut es = EventSource::get(stream_url);
-    let _ = tokio::time::timeout(Duration::from_millis(100), es.next()).await;
+    let _ = tokio::time::timeout(Duration::from_millis(600), es.next()).await;
 
     auth_ok(&user_uuid.to_string(), &ctx.mock_server).await;
     post_ok(&content_id.to_string(), &ctx.mock_server).await;
@@ -1007,6 +1007,7 @@ async fn test_sse_unlike_broadcast(pool: PgPool) {
         .await
         .unwrap();
 
+    let _ = tokio::time::timeout(Duration::from_millis(600), es.next()).await;
     let mut found_unlike = false;
     for _ in 0..3 {
         let event = tokio::time::timeout(Duration::from_secs(2), es.next()).await;
