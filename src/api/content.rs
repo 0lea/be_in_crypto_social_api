@@ -1,28 +1,27 @@
 use crate::state::AppState;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, State, rejection::PathRejection},
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde::Serialize;
+use tracing::error;
 use uuid::Uuid;
 
 #[derive(Serialize)]
 pub struct ContentResponse {
-    pub exists: bool,
-    pub id: Uuid,
+    id: Uuid,
+    content_type: String,
 }
 
 pub async fn check_content(
-    Path(id): Path<Uuid>,
+    Path((content_type, id)): Path<(String, Uuid)>,
     State(state): State<AppState>,
-) -> (StatusCode, Json<ContentResponse>) {
+) -> impl IntoResponse {
     if state.valid_content.contains(&id) {
-        (StatusCode::OK, Json(ContentResponse { exists: true, id }))
+        (StatusCode::OK, Json(ContentResponse { id, content_type })).into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ContentResponse { exists: false, id }),
-        )
+        (StatusCode::NOT_FOUND).into_response()
     }
 }
