@@ -1,10 +1,7 @@
 use crate::{
     RateLimitConfig,
     api::{errors::ApiError, request_id::ReqCtx},
-    domain::{
-        errors::DomainError, external_validator::ExternalValidator, rate_limit::RateLimiter,
-        user::UserId,
-    },
+    domain::{errors::DomainError, external_validator::ExternalValidator, user::UserId},
 };
 use axum::{
     body::Body,

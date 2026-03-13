@@ -1,9 +1,9 @@
 use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use futures_util::lock::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::{
     api::dto::{
@@ -26,7 +26,6 @@ use std::{collections::HashMap, sync::Arc};
 
 enum RefreshType {
     Count,
-    Leaderboard,
 }
 
 pub struct LikeService {
@@ -571,7 +570,6 @@ impl LikeService {
     fn format_lock_key(rtype: RefreshType, c_type: &ContentType, c_id: &ContentId) -> String {
         match rtype {
             RefreshType::Count => format!("lock:count:{}:{}", c_type.as_str(), c_id.0),
-            RefreshType::Leaderboard => format!("lock:leaderboard:{}", c_type.as_str()),
         }
     }
 }
