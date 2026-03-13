@@ -1,0 +1,22 @@
+[package]
+name = "mock-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+uuid = { version = "1.22.0", features = ["v4", "serde"] }
+axum = "0.8.8"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros"] }
+
+
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-http = { version = "0.6", features = [
+  "trace",
+  "cors",
+  "timeout",
+  "request-id",
+] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
