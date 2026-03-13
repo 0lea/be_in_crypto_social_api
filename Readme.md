@@ -163,3 +163,22 @@ curl -X POST http://localhost:8080/v1/likes \
   -H "Content-Type: application/json" \
   -d '{"content_type":"post","content_id":"731b0395-4888-4822-b516-05b4b7bf2089"}' | jq .
 ```
+## 5. Development & Testing
+
+### 5.1 Running Integration Tests
+
+The integration suite tests the full flow: **API → Database → Redis → External Mocks**.
+
+> [!IMPORTANT]
+> 
+> **Sequential Execution Required:** Integration tests must be run using a **single thread** (`--test-threads=1`). Since tests interact with a real shared PostgreSQL database and Redis instance, parallel execution would cause race conditions, data pollution, and unexpected state resets (e.g., one test flushing Redis while another is reading it).
+
+To run the tests 
+
+Bash
+
+```
+cargo test -- --test-threads=1 --nocapture
+
+```
+
