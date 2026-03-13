@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT \n                content_type, \n                content_id, \n                COUNT(*) as \"count!\"\n            FROM likes\n            WHERE \n                ($1::text IS NULL OR content_type = $1) AND\n                ($2::timestamptz IS NULL OR created_at >= $2)\n            GROUP BY content_type, content_id\n            ORDER BY \"count!\" DESC\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "content_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a251cae151fbef63b3e9b9a2bc44f4c20101025972979932bf3d675b6d9592f3"
+}
