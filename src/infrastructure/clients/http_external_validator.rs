@@ -142,8 +142,9 @@ impl HttpExternalValidator {
 impl ExternalValidator for HttpExternalValidator {
     async fn validate_user(&self, token: &UserId) -> Result<Uuid, DomainError> {
         // hash token
-        let token_hash = blake3::hash(token.0.as_bytes()).to_string();
-        let cache_key = format!("val:user:{}", token_hash);
+        // let hash = blake3::hash(token.0.as_bytes());
+        // let hex_str = hash.to_hex();
+        let cache_key = format!("val:user:{}", token.0);
         if let Some(ValidationResult::Valid(user_id)) = self.get_cached_validation(&cache_key).await
         {
             return Ok(user_id);
