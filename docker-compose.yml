@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: social
+      POSTGRES_PASSWORD: social_password
+      POSTGRES_DB: social_api
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U social -d social_api"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports: ["6379:6379"]
+
+  mock-content-api:
+    build: ./mocks
+    environment:
+      - MOCK_TYPE=content
+      - PORT=8081
+    ports: ["8081:8081"]
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/usr/src/app/target
+
+  mock-profile-api:
+    build: ./mocks
+    environment:
+      - MOCK_TYPE=profile
+      - PORT=8084
+    ports: ["8084:8084"]
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/usr/src/app/target
+
+  social-api:
+    build: ./social_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    environment:
+      - DATABASE_URL=postgres://social:social_password@postgres:5432/social_api
+      - READ_DATABASE_URL=postgres://social:social_password@postgres:5432/social_api
+      - REDIS_URL=redis://redis:6379
+      - HTTP_PORT=8080
+      - CONTENT_API_POST_URL=http://mock-content-api:8081
+      - CONTENT_API_BONUS_HUNTER_URL=http://mock-content-api:8081
+      - CONTENT_API_TOP_PICKS_URL=http://mock-content-api:8081
+      - PROFILE_API_URL=http://mock-profile-api:8084
+      - LOG_LEVEL=info
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
+  cargo_cache:
+  target_cache:
